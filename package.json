@@ -1,0 +1,17 @@
+{
+  "name": "evergreen-form",
+  "version": "2.1.0",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "build": "bun build --target bun src/index.ts --outdir dist",
+    "docker:build": "docker build -t evergreen-form:latest .",
+    "docker:run": "docker run -d --name evergreen-form -p 3000:3000 -v evergreen-data:/data evergreen-form:latest"
+  },
+  "dependencies": {
+    "elysia": "latest",
+    "@elysiajs/cors": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
