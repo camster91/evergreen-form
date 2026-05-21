@@ -253,6 +253,8 @@ function initDatabase() {
     listAll: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC`),
     listRecent: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC LIMIT 500`),
     deleteById: db.prepare(`DELETE FROM submissions WHERE id = ?`),
+    updateById: db.prepare(`UPDATE submissions SET first_name = ?, last_name = ?, email = ?, phone = ?, address1 = ?, address2 = ?, city = ?, region = ?, zip = ?, country = ?, window = ?, marketing_optin = ? WHERE id = ?`),
+    deleteMany: db.prepare(`DELETE FROM submissions WHERE id IN (${Array(500).fill('?').join(',')})`),
     countAll: db.prepare(`SELECT COUNT(*) as count FROM submissions`),
     countToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE DATE(submitted_at) = DATE('now')`),
     countByIPToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE ip = ? AND DATE(submitted_at) = DATE('now')`),
@@ -260,7 +262,7 @@ function initDatabase() {
 }
 
 const sql = initDatabase();
-const { db, insert, listAll, listRecent, deleteById, countAll, countToday, countByIPToday } = sql;
+const { db, insert, listAll, listRecent, deleteById, updateById, deleteMany, countAll, countToday, countByIPToday } = sql;
 
 // Periodic DB integrity check
 setInterval(() => {
@@ -984,54 +986,185 @@ app.get("/admin", ({ headers, set }) => {
 
   let tableRows = "";
   for (const r of rows) {
-    tableRows += `<tr>
+    const name = escapeHtml(String(r.first_name || "")) + " " + escapeHtml(String(r.last_name || ""));
+    const addr = escapeHtml(String(r.address1 || "") + (r.address2 ? ", " + String(r.address2) : ""));
+    tableRows += `<tr data-id="${r.id}">
+      <td><input type="checkbox" class="row-check" value="${r.id}"></td>
       <td>${r.id}</td>
-      <td>${escapeHtml(String(r.first_name || ""))} ${escapeHtml(String(r.last_name || ""))}</td>
-      <td>${escapeHtml(String(r.email || ""))}</td>
-      <td>${escapeHtml(String(r.phone || ""))}</td>
-      <td>${escapeHtml(String(r.address1 || "") + (r.address2 ? ", " + String(r.address2) : ""))}</td>
-      <td>${escapeHtml(String(r.city || ""))}</td>
-      <td>${escapeHtml(String(r.region || ""))}</td>
-      <td>${escapeHtml(String(r.zip || ""))}</td>
-      <td>${escapeHtml(String(r.country || ""))}</td>
-      <td>${r.marketing_optin ? "✅" : "—"}</td>
+      <td class="td-name">${name}</td>
+      <td class="td-email">${escapeHtml(String(r.email || ""))}</td>
+      <td class="td-phone">${escapeHtml(String(r.phone || ""))}</td>
+      <td class="td-addr">${addr}</td>
+      <td class="td-city">${escapeHtml(String(r.city || ""))}</td>
+      <td class="td-region">${escapeHtml(String(r.region || ""))}</td>
+      <td class="td-zip">${escapeHtml(String(r.zip || ""))}</td>
+      <td class="td-country">${escapeHtml(String(r.country || ""))}</td>
+      <td class="td-window">${escapeHtml(String(r.window || ""))}</td>
+      <td class="td-optin">${r.marketing_optin ? "Yes" : "No"}</td>
       <td>${formatDate(r.submitted_at)}</td>
+      <td class="actions">
+        <button class="btn-small btn-edit" onclick="editRow(${r.id})">Edit</button>
+        <button class="btn-small btn-delete" onclick="deleteRow(${r.id})">Delete</button>
+      </td>
     </tr>`;
   }
 
   return `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Evergreen Submissions</title>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Evergreen Submissions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-body{font-family:system-ui,-apple-system,sans-serif;margin:40px;background:#f7f7f7;color:#1a1a1a;}
-h1{margin:0 0 8px;font-size:28px;font-weight:700;}
-.stats{display:flex;gap:20px;margin:20px 0;flex-wrap:wrap;}
-.stat{background:#fff;padding:20px 28px;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.08);text-align:center;}
-.stat-num{font-size:32px;font-weight:700;color:#2d2d2d;}
-.stat-label{font-size:12px;color:#666;text-transform:uppercase;letter-spacing:0.6px;}
-.btn{background:#1a1a1a;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;display:inline-block;margin:4px 4px 4px 0;border:none;cursor:pointer;}
-.btn:hover{background:#ff6b35;}
-table{width:100%;background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.08);border-collapse:collapse;margin-top:20px;overflow:hidden;}
-th,td{padding:12px 14px;text-align:left;font-size:13px;}
-th{background:#1a1a1a;color:#fff;font-weight:600;text-transform:uppercase;font-size:11px;letter-spacing:0.5px;}
-tr:nth-child(even){background:#fafafa;}
-tr:hover{background:#f0f0f0;}
-.empty{padding:40px;text-align:center;color:#888;font-size:15px;}
-@media (max-width:640px){ body{margin:16px;} .stats{flex-direction:column;} }
+:root{--coral:#F2786D;--coral-dark:#E55A2B;--yellow:#fce55d;--bg:#FFF8F0;--text:#2C2C2C;--white:#fff;--gray:#888;--light:#fafafa;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Fredoka',system-ui,sans-serif;background:var(--bg);color:var(--text);padding:24px 16px;line-height:1.5;}
+.header{display:flex;align-items:center;gap:14px;margin-bottom:24px;}
+.header img{width:56px;height:56px;border-radius:50%;object-fit:cover;background:var(--yellow);}
+.header h1{font-size:28px;font-weight:700;color:var(--coral);margin:0;}
+.header p{color:var(--gray);font-size:14px;margin:0;}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px;}
+.toolbar-left{display:flex;gap:10px;flex-wrap:wrap;flex:1;}
+.toolbar-right{display:flex;gap:10px;}
+.btn{background:var(--coral);color:var(--white);padding:10px 18px;border-radius:999px;border:none;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s;text-decoration:none;display:inline-block;}
+.btn:hover{background:var(--coral-dark);}
+.btn-outline{background:transparent;color:var(--coral);border:2px solid var(--coral);}
+.btn-outline:hover{background:var(--coral);color:var(--white);}
+.btn-small{padding:6px 12px;font-size:12px;border-radius:8px;}
+.btn-delete{background:#c62828;}
+.btn-delete:hover{background:#a31818;}
+.btn-edit{background:#2d7d32;}
+.btn-edit:hover{background:#1b5e20;}
+.stats{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap;}
+.stat{background:var(--white);padding:16px 24px;border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);text-align:center;min-width:110px;}
+.stat-num{font-size:28px;font-weight:700;color:var(--coral);}
+.stat-label{font-size:11px;color:var(--gray);text-transform:uppercase;letter-spacing:0.6px;margin-top:4px;}
+.table-wrap{background:var(--white);border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);overflow:hidden;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{background:var(--coral);color:var(--white);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;padding:12px 10px;text-align:left;position:sticky;top:0;}
+td{padding:10px;border-bottom:1px solid #f0f0f0;vertical-align:top;}
+tr:hover{background:var(--light);}
+tr.editing td{background:#fff9c4;}
+.actions{white-space:nowrap;}
+.row-check{width:16px;height:16px;cursor:pointer;accent-color:var(--coral);}
+.empty{padding:60px;text-align:center;color:var(--gray);font-size:16px;}
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);align-items:center;justify-content:center;z-index:100;}
+.modal.show{display:flex;}
+.modal-box{background:var(--white);padding:28px;border-radius:20px;max-width:420px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,0.15);}
+.modal-box h3{margin:0 0 16px;color:var(--coral);font-size:22px;}
+.modal-box label{display:block;font-size:13px;font-weight:600;margin:10px 0 4px;color:var(--gray);}
+.modal-box input{width:100%;padding:10px 14px;border:2px solid var(--coral);border-radius:12px;font-family:inherit;font-size:14px;outline:none;}
+.modal-box input:focus{box-shadow:0 0 0 3px rgba(242,120,109,0.2);}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:20px;}
+@media(max-width:900px){body{padding:12px;} th,td{padding:8px 6px;font-size:12px;} .actions{display:flex;flex-direction:column;gap:4px;}}
 </style></head><body>
-<h1>Evergreen Submissions</h1>
+<div class="header">
+  <img src="data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgNDEyLjYgNDEyLjYiIHZlcnNpb249IjEuMSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiBpZD0iTGF5ZXJfMSI+CiAgCiAgPGRlZnM+CiAgICA8c3R5bGU+CiAgICAgIC5zdDAgewogICAgICAgIGZpbGw6ICNmNDViNWI7CiAgICAgIH0KCiAgICAgIC5zdDEgewogICAgICAgIGZpbGw6ICNmZmY7CiAgICAgIH0KCiAgICAgIC5zdDIgewogICAgICAgIGZpbGw6ICNmY2U1NWQ7CiAgICAgIH0KICAgIDwvc3R5bGU+CiAgPC9kZWZzPgogIDxjaXJjbGUgcj0iMjA2LjMiIGN5PSIyMDYuMyIgY3g9IjIwNi4zIiBjbGFzcz0ic3QyIj48L2NpcmNsZT4KICA8Zz4KICAgIDxnPgogICAgICA8cGF0aCBkPSJNMzMxLjcsMTM0LjZjLTUuMi0xNC4xLTE2LjYtMjUuNi0zMC45LTMyLjItMzQuOC0xNi4yLTY2LjYuNS04OC42LDc3LjctLjQsMS41LTEuNSwzLjYtMi4xLDQuOS0xLjksMy45LTkuMiwzLjgtMTEuNywwLS44LTEuMi0xLjctMy40LTIuMS00LjktMjItNzcuMi01My44LTkzLjktODguNi03Ny43LTE0LjIsNi42LTI1LjYsMTguMS0zMC45LDMyLjItNi4xLDE2LjMtNS4zLDM0LjQtMi4yLDUxLjMsNi44LDM2LjcsMjQuNiw3MC43LDUwLjIsOTksMTkuMSwyMSw0MC42LDQzLjcsNjYuOCw1OC40LDkuNCw0LjksMTUuMiw2LjIsMjUuMywwLDI2LjItMTQuNyw0Ny43LTM3LjMsNjYuOC01OC40LDI1LjYtMjguMyw0My41LTYyLjMsNTAuMi05OSwzLjEtMTYuOSwzLjktMzQuOS0yLjItNTEuM1oiIGNsYXNzPSJzdDAiPjwvcGF0aD4KICAgICAgPGc+CiAgICAgICAgPHJlY3QgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTIzLjUgLTQ2LjIpIHJvdGF0ZSgzMy43KSIgcnk9IjYuNiIgcng9IjYuNiIgaGVpZ2h0PSI1NC4xIiB3aWR0aD0iNTQuMSIgeT0iMTUzLjciIHg9IjExMSIgY2xhc3M9InN0MiI+PC9yZWN0PgogICAgICAgIDxwYXRoIGQ9Ik0xMTMsMTgxLjhjMTMuOS04LjksMzAuNy0xMi4zLDQ3LTkuOCwyLjguNCw0LjYuNyw0LjQuNWwtMzAuMy0yMC4yYy0xLjItLjgtMi45LS41LTMuNy43bC0yMC4yLDMwLjNjLS4xLjIuOS0uNSwyLjctMS42WiIgY2xhc3M9InN0MSI+PC9wYXRoPgogICAgICA8L2c+CiAgICA8L2c+CiAgICA8cGF0aCBkPSJNMTQ5LjEsMjI5LjJjLS4zLTEuNC0xLjEtMi43LTEuNC00LjItLjctMi44LS4yLTUuOC40LTguNi42LTIuNSwxLjgtNS40LDEuNS04LS40LTIuOC0zLjItMy45LTUuNy0zLjQtMi42LjUtNC43LDIuNC01LjgsNC44LS4xLjMtLjEuNiwwLC44LS4yLjMtLjMuNS0uMy44LDAsLjQsMCwuOC4zLDEuMiwyLDIuMSwzLjgsNC4xLDMuOSw3LjEuMSwzLjEtLjQsNi4xLTEuMyw5LjEtLjcsMi40LTEuNCw1LjEuMSw3LjQsMS4yLDEuOSwzLjUsMi44LDUuNiwxLjcsMS44LTEsMi41LTMuMiwyLjgtNS4xLjEtMS4yLjEtMi41LS4xLTMuN1oiIGNsYXNzPSJzdDIiPjwvcGF0aD4KICA8L2c+CiAgPHBhdGggZD0iTTM4Ny41LDc3LjFjLTIuMiwwLTQuMS0uNC01LjktMS4xcy0zLjMtMS44LTQuNi0zLjFjLTEuMy0xLjMtMi4yLTIuOS0yLjktNC43LS43LTEuOC0xLTMuOC0xLTUuOXMuNi01LjMsMS44LTcuNWMxLjItMi4xLDIuOS0zLjgsNS4xLTUsMi4yLTEuMiw0LjctMS44LDcuNi0xLjhzNCwuMyw1LjgsMWMxLjguNywzLjMsMS43LDQuNiwyLjksMS4zLDEuMywyLjMsMi44LDMsNC41LjcsMS43LDEuMSwzLjcsMS4xLDUuOHMtLjQsNC4yLTEuMSw2Yy0uNywxLjgtMS44LDMuNC0zLjEsNC43LTEuMywxLjMtMi45LDIuMy00LjYsMy4xLTEuOC43LTMuNywxLjEtNS43LDEuMVpNMzg3LjYsNzMuNmMxLjYsMCwzLjEtLjMsNC40LS45czIuNC0xLjQsMy40LTIuNCwxLjctMi4yLDIuMi0zLjZjLjUtMS40LjctMi45LjctNC41cy0uNC00LTEuMy01LjZjLS45LTEuNi0yLjEtMi45LTMuNy0zLjgtMS42LS45LTMuNS0xLjQtNS42LTEuNHMtNC4xLjUtNS43LDEuNC0yLjgsMi4yLTMuNiwzLjhjLS44LDEuNi0xLjMsMy41LTEuMyw1LjZzLjIsMy4xLjcsNC40Yy41LDEuNCwxLjIsMi42LDIuMSwzLjYuOSwxLDIsMS45LDMuMywyLjRzMi44LjksNC41LjlaTTM4NC4zLDY5LjhjLS42LDAtMS0uMS0xLjMtLjQtLjMtLjItLjUtLjctLjYtMS4zLDAtMS0uMi0yLS4yLTMsMC0xLDAtMS45LDAtMi44czAtMS43LDAtMi43YzAtLjkuMS0xLjguMi0yLjYsMC0uNS4zLS45LjYtMS4yLjMtLjMuNy0uNSwxLjQtLjYuNi0uMSwxLjUtLjIsMi43LS4yLDIuMiwwLDMuOC40LDQuNiwxczEuMywxLjcsMS4zLDMtLjIsMS41LS41LDJjLS4zLjUtLjcsMS0xLjIsMS4zLDAsMC0uMS4xLS4yLjIsMCwwLDAsLjEsMCwuMnMwLC4yLDAsLjNjMCwwLDAsLjIuMi4yLjIuMy40LjYuNywxcy41LjguOCwxLjJjLjMuNC41LjkuNywxLjMuMi40LjMuOC4zLDEsMCwuNS0uMS44LS40LDEuMi0uMi4zLS43LjUtMS4yLjVzLS45LS4yLTEuMi0uNWMtLjMtLjMtLjctLjgtMS0xLjMtLjUtLjgtLjgtMS40LTEuMS0xLjktLjMtLjUtLjUtLjktLjctMS4yLS4yLS40LS40LS42LS42LS43LS4yLDAtLjUtLjEtLjgtLjFzLS42LDAtLjguMmMtLjIuMS0uMi4zLS4yLjUsMCwuNCwwLC44LDAsMS4xLDAsLjMsMCwuNywwLDEuMXMwLC45LDAsMS41LS4xLjctLjQsMWMtLjIuMy0uNi41LTEuMi41Wk0zODcsNjEuM2MxLDAsMS43LS4yLDIuMS0uNS40LS4zLjYtLjcuNi0xLjEsMC0uNi0uMi0xLS42LTEuMy0uNC0uMi0xLjEtLjQtMi0uNHMtLjgsMC0xLDBjLS4yLDAtLjMuMi0uNC4zLDAsLjIsMCwuNSwwLC45LDAsLjYsMCwxLjEsMCwxLjQsMCwuMy4yLjUuNC42LjIsMCwuNS4xLDEsLjFaIiBjbGFzcz0ic3QwIj48L3BhdGg+Cjwvc3ZnPg==" alt="Evergreen">
+  <div><h1>Evergreen Submissions</h1><p>Admin Dashboard</p></div>
+</div>
 <div class="stats">
   <div class="stat"><div class="stat-num">${total}</div><div class="stat-label">Total</div></div>
   <div class="stat"><div class="stat-num">${today}</div><div class="stat-label">Today</div></div>
   <div class="stat"><div class="stat-num">${errorCount}</div><div class="stat-label">Errors</div></div>
-  <div class="stat"><div class="stat-num">${((Date.now() - startTime) / 1000 / 60).toFixed(0)}</div><div class="stat-label">Uptime (min)</div></div>
+  <div class="stat"><div class="stat-num">${((Date.now()-startTime)/1000/60).toFixed(0)}</div><div class="stat-label">Uptime (min)</div></div>
 </div>
-<a class="btn" href="/export">Download CSV</a>
-<a class="btn" href="/">View Form</a>
-${rows.length === 0 ? '<div class="empty">No submissions yet.</div>' : `
-<table><thead><tr>
-  <th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Address</th><th>City</th>
-  <th>Region</th><th>Zip</th><th>Country</th><th>Opt-in</th><th>Date</th>
-</tr></thead><tbody>${tableRows}</tbody></table>`}
+<div class="toolbar">
+  <div class="toolbar-left">
+    <button class="btn btn-outline" onclick="toggleAll()">Select All</button>
+    <button class="btn btn-delete" onclick="bulkDelete()">Delete Selected</button>
+  </div>
+  <div class="toolbar-right">
+    <a class="btn" href="/export">Download CSV</a>
+    <a class="btn btn-outline" href="/">View Form</a>
+  </div>
+</div>
+<div class="table-wrap">
+  <table>
+    <thead><tr>
+      <th style="width:30px"><input type="checkbox" id="check-all" onclick="toggleAll()"></th>
+      <th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Address</th><th>City</th>
+      <th>Region</th><th>Zip</th><th>Country</th><th>Window</th><th>Opt-in</th><th>Date</th><th>Actions</th>
+    </tr></thead>
+    <tbody>${rows.length===0?'<tr><td colspan="14" class="empty">No submissions yet.</td></tr>':tableRows}</tbody>
+  </table>
+</div>
+<div class="modal" id="edit-modal"><div class="modal-box">
+  <h3>Edit Submission</h3>
+  <input type="hidden" id="edit-id">
+  <label>First Name</label><input id="edit-first">
+  <label>Last Name</label><input id="edit-last">
+  <label>Email</label><input id="edit-email">
+  <label>Phone</label><input id="edit-phone">
+  <label>Address</label><input id="edit-addr">
+  <label>City</label><input id="edit-city">
+  <label>Region</label><input id="edit-region">
+  <label>Zip</label><input id="edit-zip">
+  <label>Country</label><input id="edit-country">
+  <label>Window</label><input id="edit-window">
+  <label>Marketing Opt-in</label><input id="edit-optin" placeholder="yes or no">
+  <div class="modal-actions">
+    <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+    <button class="btn" onclick="saveEdit()">Save</button>
+  </div>
+</div></div>
+<script>
+const $=id=>document.getElementById(id);
+function toggleAll(){
+  const all=$('check-all').checked;
+  document.querySelectorAll('.row-check').forEach(c=>c.checked=all);
+}
+async function deleteRow(id){
+  if(!confirm('Delete submission #'+id+'?'))return;
+  const r=await fetch('/admin/delete/'+id,{method:'DELETE'});
+  const j=await r.json();
+  if(j.success)document.querySelector('tr[data-id="'+id+'"]').remove();
+  else alert(j.message||'Delete failed');
+}
+async function bulkDelete(){
+  const ids=Array.from(document.querySelectorAll('.row-check:checked')).map(c=>parseInt(c.value));
+  if(!ids.length){alert('No rows selected');return;}
+  if(!confirm('Delete '+ids.length+' submissions?'))return;
+  const r=await fetch('/admin/bulk-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});
+  const j=await r.json();
+  if(j.success)ids.forEach(id=>{const tr=document.querySelector('tr[data-id="'+id+'"]');if(tr)tr.remove();});
+  else alert(j.message||'Bulk delete failed');
+}
+function editRow(id){
+  const tr=document.querySelector('tr[data-id="'+id+'"]');if(!tr)return;
+  $('edit-id').value=id;
+  $('edit-first').value=tr.querySelector('.td-name').textContent.split(' ')[0]||'';
+  $('edit-last').value=tr.querySelector('.td-name').textContent.split(' ').slice(1).join(' ')||'';
+  $('edit-email').value=tr.querySelector('.td-email').textContent;
+  $('edit-phone').value=tr.querySelector('.td-phone').textContent;
+  $('edit-addr').value=tr.querySelector('.td-addr').textContent;
+  $('edit-city').value=tr.querySelector('.td-city').textContent;
+  $('edit-region').value=tr.querySelector('.td-region').textContent;
+  $('edit-zip').value=tr.querySelector('.td-zip').textContent;
+  $('edit-country').value=tr.querySelector('.td-country').textContent;
+  $('edit-window').value=tr.querySelector('.td-window').textContent;
+  $('edit-optin').value=tr.querySelector('.td-optin').textContent;
+  $('edit-modal').classList.add('show');
+}
+function closeModal(){$('edit-modal').classList.remove('show');}
+async function saveEdit(){
+  const id=$('edit-id').value;
+  const body={
+    first_name:$('edit-first').value,
+    last_name:$('edit-last').value,
+    email:$('edit-email').value,
+    phone:$('edit-phone').value,
+    address1:$('edit-addr').value,
+    city:$('edit-city').value,
+    region:$('edit-region').value,
+    zip:$('edit-zip').value,
+    country:$('edit-country').value,
+    window:$('edit-window').value,
+    marketing_optin:$('edit-optin').value.toLowerCase()==='yes'?1:0,
+  };
+  const r=await fetch('/admin/edit/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json();
+  if(j.success)location.reload();else alert(j.message||'Update failed');
+}
+</script>
 </body></html>`;
 });
 
@@ -1050,6 +1183,61 @@ app.delete("/admin/delete/:id", ({ headers, params, set }) => {
   }
   const result = deleteById.run(id);
   info("Submission deleted", { id, changes: result.changes });
+  return { success: true, deleted: result.changes };
+});
+
+// -- Admin edit submission --
+app.put("/admin/edit/:id", async ({ headers, params, body, set }) => {
+  setSecurityHeaders(set.headers as Record<string, string>);
+  if (!checkBasicAuth(headers as Record<string, string | undefined>)) {
+    set.status = 401;
+    set.headers["WWW-Authenticate"] = 'Basic realm="Evergreen Admin"';
+    return { success: false, message: "Unauthorized" };
+  }
+  const id = parseInt(params.id, 10);
+  if (isNaN(id)) {
+    set.status = 400;
+    return { success: false, message: "Invalid ID" };
+  }
+  const b = body as Record<string, any>;
+  const result = updateById.run(
+    String(b.first_name || ""),
+    String(b.last_name || ""),
+    String(b.email || ""),
+    String(b.phone || ""),
+    String(b.address1 || ""),
+    String(b.address2 || ""),
+    String(b.city || ""),
+    String(b.region || ""),
+    String(b.zip || ""),
+    String(b.country || ""),
+    String(b.window || ""),
+    b.marketing_optin ? 1 : 0,
+    id
+  );
+  info("Submission updated", { id, changes: result.changes });
+  return { success: true, updated: result.changes };
+});
+
+// -- Admin bulk delete --
+app.post("/admin/bulk-delete", async ({ headers, body, set }) => {
+  setSecurityHeaders(set.headers as Record<string, string>);
+  if (!checkBasicAuth(headers as Record<string, string | undefined>)) {
+    set.status = 401;
+    set.headers["WWW-Authenticate"] = 'Basic realm="Evergreen Admin"';
+    return { success: false, message: "Unauthorized" };
+  }
+  const b = body as Record<string, any>;
+  const ids = (b.ids || []).map((x: any) => parseInt(x, 10)).filter((x: number) => !isNaN(x));
+  if (!ids.length) {
+    set.status = 400;
+    return { success: false, message: "No IDs provided" };
+  }
+  // Use raw SQL for dynamic IN clause since prepared statement has fixed param count
+  const placeholders = ids.map(() => "?").join(",");
+  const stmt = db.prepare(`DELETE FROM submissions WHERE id IN (${placeholders})`);
+  const result = stmt.run(...ids);
+  info("Bulk delete", { count: ids.length, deleted: result.changes });
   return { success: true, deleted: result.changes };
 });
 
