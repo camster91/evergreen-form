@@ -12,15 +12,17 @@
 body {
   font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #FFFFFF;
-  min-height: 100vh;
-  padding: 40px 16px;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   -webkit-font-smoothing: antialiased;
 }
 .card {
-  max-width: 560px;
-  margin: 0 auto;
+  width: 100%;
+  max-width: 100%;
   background: #FFFFFF;
-  padding: 32px 28px;
+  padding: 20px 16px;
 }
 .input-grid {
   display: grid;
@@ -163,6 +165,26 @@ body {
   border: 2px solid #c62828;
 }
 
+.thank-you {
+  display: none;
+  text-align: center;
+  padding: 40px 20px;
+}
+.thank-you.show {
+  display: block;
+}
+.thank-you h2 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #F2786D;
+  margin-bottom: 12px;
+}
+.thank-you p {
+  font-size: 16px;
+  color: #2C2C2C;
+  line-height: 1.5;
+}
+
 @media (max-width: 480px) {
   body { padding: 20px 12px; }
   .card { padding: 24px 14px; }
@@ -172,6 +194,10 @@ body {
 </head>
 <body>
 <div class="card">
+<div class="thank-you" id="fsf-thankyou">
+  <h2>Thank You!</h2>
+  <p>Your sample request has been received. We'll be in touch soon.</p>
+</div>
 <form id="fsf-form" method="post" action="/submit">
   <div class="input-grid">
     <input type="text" name="first_name" placeholder="first name" required maxlength="80">
@@ -197,6 +223,7 @@ body {
   </div>
   <div class="fsf-message" id="fsf-message"></div>
   <button type="submit" class="submit-btn">SUBMIT</button>
+  <input type="text" name="company" style="display:none !important;" tabindex="-1" autocomplete="off" aria-hidden="true">
 </form>
 </div>
 
@@ -205,6 +232,7 @@ body {
   var form = document.getElementById('fsf-form');
   var msg = document.getElementById('fsf-message');
   var btn = form.querySelector('button[type="submit"]');
+  var thankyou = document.getElementById('fsf-thankyou');
   var originalText = btn.textContent;
   form.addEventListener('submit', function(e) {
     e.preventDefault();
@@ -214,9 +242,15 @@ body {
     fetch('/submit', { method: 'POST', body: data })
     .then(function(r) { return r.json(); })
     .then(function(json) {
-      msg.style.display = 'block';
-      if (json.success) { msg.textContent = json.message; msg.className = 'fsf-message success'; form.reset(); }
-      else { msg.textContent = json.message || 'Something went wrong.'; msg.className = 'fsf-message error'; }
+      if (json.success) {
+        form.style.display = 'none';
+        thankyou.classList.add('show');
+        form.reset();
+      } else {
+        msg.style.display = 'block';
+        msg.textContent = json.message || 'Something went wrong.';
+        msg.className = 'fsf-message error';
+      }
     })
     .catch(function() { msg.style.display = 'block'; msg.textContent = 'Network error.'; msg.className = 'fsf-message error'; })
     .finally(function() { btn.disabled = false; btn.textContent = originalText; });

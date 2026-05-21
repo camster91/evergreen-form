@@ -252,6 +252,7 @@ function initDatabase() {
     `),
     listAll: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC`),
     listRecent: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC LIMIT 500`),
+    deleteById: db.prepare(`DELETE FROM submissions WHERE id = ?`),
     countAll: db.prepare(`SELECT COUNT(*) as count FROM submissions`),
     countToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE DATE(submitted_at) = DATE('now')`),
     countByIPToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE ip = ? AND DATE(submitted_at) = DATE('now')`),
@@ -259,7 +260,7 @@ function initDatabase() {
 }
 
 const sql = initDatabase();
-const { db, insert, listAll, listRecent, countAll, countToday, countByIPToday } = sql;
+const { db, insert, listAll, listRecent, deleteById, countAll, countToday, countByIPToday } = sql;
 
 // Periodic DB integrity check
 setInterval(() => {
@@ -411,15 +412,17 @@ const FORM_PAGE = `<!DOCTYPE html>
 body {
   font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #FFFFFF;
-  min-height: 100vh;
-  padding: 40px 16px;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   -webkit-font-smoothing: antialiased;
 }
 .card {
-  max-width: 560px;
-  margin: 0 auto;
+  width: 100%;
+  max-width: 100%;
   background: #FFFFFF;
-  padding: 32px 28px;
+  padding: 20px 16px;
 }
 .input-grid {
   display: grid;
@@ -604,6 +607,25 @@ body {
   color: #c62828;
   border: 2px solid #c62828;
 }
+.thank-you {
+  display: none;
+  text-align: center;
+  padding: 40px 20px;
+}
+.thank-you.show {
+  display: block;
+}
+.thank-you h2 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #F06464;
+  margin-bottom: 12px;
+}
+.thank-you p {
+  font-size: 16px;
+  color: #2C2C2C;
+  line-height: 1.5;
+}
 
 @media (max-width: 480px) {
   body { padding: 20px 12px; }
@@ -614,6 +636,10 @@ body {
 </head>
 <body>
 <div class="card">
+<div class="thank-you" id="fsf-thankyou">
+  <h2>Thank You!</h2>
+  <p>Your sample request has been received. We'll be in touch soon.</p>
+</div>
 <form id="fsf-form" method="post" action="/submit">
   <div class="input-grid">
     <input type="text" name="first_name" placeholder="first name" required maxlength="80">
@@ -643,6 +669,7 @@ body {
   </label>
   <div class="fsf-message" id="fsf-message"></div>
   <button type="submit" class="submit-btn">SUBMIT</button>
+  <input type="text" name="company" style="display:none !important;" tabindex="-1" autocomplete="off" aria-hidden="true">
 </form>
 </div>
 <script>
@@ -650,6 +677,7 @@ body {
   var form = document.getElementById('fsf-form');
   var msg = document.getElementById('fsf-message');
   var btn = form.querySelector('button[type="submit"]');
+  var thankyou = document.getElementById('fsf-thankyou');
   var originalText = btn.textContent;
   form.addEventListener('submit', function(e) {
     e.preventDefault();
@@ -659,9 +687,15 @@ body {
     fetch('/submit', { method: 'POST', body: data })
     .then(function(r) { return r.json(); })
     .then(function(json) {
-      msg.style.display = 'block';
-      if (json.success) { msg.textContent = json.message; msg.className = 'fsf-message success'; form.reset(); }
-      else { msg.textContent = json.message || 'Something went wrong.'; msg.className = 'fsf-message error'; }
+      if (json.success) {
+        form.style.display = 'none';
+        thankyou.classList.add('show');
+        form.reset();
+      } else {
+        msg.style.display = 'block';
+        msg.textContent = json.message || 'Something went wrong.';
+        msg.className = 'fsf-message error';
+      }
     })
     .catch(function() { msg.style.display = 'block'; msg.textContent = 'Network error.'; msg.className = 'fsf-message error'; })
     .finally(function() { btn.disabled = false; btn.textContent = originalText; });
@@ -699,11 +733,11 @@ input:focus{outline:none;border-color:#ff6b35;}
   <code id="embed-code">&lt;iframe
     src="https://evergreen-form.ashbi.ca/"
     width="100%"
-    height="700"
-    style="border:none;overflow:hidden;"
+    height="100%"
+    style="border:none;overflow:hidden;display:block;"
     frameborder="0"
     scrolling="no"
-&gt;&lt;/iframe&gt;</code>
+  &gt;&lt;/iframe&gt;</code>
 </div>
 <button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('embed-code').textContent);this.textContent='Copied!';">Copy to Clipboard</button>
 <div class="preview">
@@ -804,6 +838,26 @@ app.get("/health", () => {
   }
 });
 
+// Alias for monitoring tools expecting /api/health
+app.get("/api/health", () => {
+  try {
+    const total = (countAll.get() as any).count as number;
+    const today = (countToday.get() as any).count as number;
+    return {
+      status: "ok",
+      uptimeMs: Date.now() - startTime,
+      requestCount,
+      submitCount,
+      errorCount,
+      totalSubmissions: total,
+      todaySubmissions: today,
+      version: "1.1.1",
+    };
+  } catch (e: any) {
+    return { status: "degraded", reason: e.message };
+  }
+});
+
 // ── Form page (GET /) ──
 app.get("/", ({ set }) => {
   set.headers["Content-Type"] = "text/html";
@@ -830,6 +884,14 @@ app.post("/submit", async ({ body, request, set }) => {
     warn("IP daily limit hit", { ip, count: ipCountToday });
     set.status = 429;
     return JSON.stringify({ success: false, message: "Daily submission limit reached. Please try again tomorrow." });
+  }
+
+  // Honeypot: if "company" field is filled, reject (bot)
+  const rawBody = body as Record<string, any>;
+  if (rawBody.company && String(rawBody.company).trim()) {
+    warn("Honeypot triggered", { ip, company: rawBody.company });
+    set.status = 400;
+    return JSON.stringify({ success: false, message: "Invalid submission." });
   }
 
   const data = body as Record<string, any>;
@@ -973,7 +1035,25 @@ ${rows.length === 0 ? '<div class="empty">No submissions yet.</div>' : `
 </body></html>`;
 });
 
-// ── CSV export (Klaviyo format) ──
+// -- Admin delete submission --
+app.delete("/admin/delete/:id", ({ headers, params, set }) => {
+  setSecurityHeaders(set.headers as Record<string, string>);
+  if (!checkBasicAuth(headers as Record<string, string | undefined>)) {
+    set.status = 401;
+    set.headers["WWW-Authenticate"] = 'Basic realm="Evergreen Admin"';
+    return { success: false, message: "Unauthorized" };
+  }
+  const id = parseInt(params.id, 10);
+  if (isNaN(id)) {
+    set.status = 400;
+    return { success: false, message: "Invalid ID" };
+  }
+  const result = deleteById.run(id);
+  info("Submission deleted", { id, changes: result.changes });
+  return { success: true, deleted: result.changes };
+});
+
+// -- CSV export (Klaviyo format) --
 app.get("/export", ({ headers, set }) => {
   setSecurityHeaders(set.headers as Record<string, string>);
   if (!checkBasicAuth(headers as Record<string, string | undefined>)) {
