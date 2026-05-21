@@ -1,14 +1,20 @@
 import { Elysia, t } from "elysia";
 import { cors } from "@elysiajs/cors";
 import { Database } from "bun:sqlite";
+import { createHash, timingSafeEqual } from "crypto";
 
 // ════════════════════════════════════════════
 // CONFIGURATION
 // ════════════════════════════════════════════
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const ADMIN_USER = process.env.ADMIN_USER || "evergreen";
-const ADMIN_PASS = process.env.ADMIN_PASS || "team2026";
+const ADMIN_USER = process.env.ADMIN_USER || "";
+const ADMIN_PASS = process.env.ADMIN_PASS || "";
 const DB_PATH = process.env.DB_PATH || "/data/submissions.db";
+
+if (!ADMIN_USER || !ADMIN_PASS) {
+  console.error("FATAL: ADMIN_USER and ADMIN_PASS env vars are required");
+  process.exit(1);
+}
 
 // Rate limiting
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || "60000"); // 1 minute
@@ -164,8 +170,17 @@ function getClientIP(request: Request): string {
   return "127.0.0.1";
 }
 
+const RATE_LIMIT_MAX_ENTRIES = 10000;
+
 function checkRateLimit(ip: string): { allowed: boolean; remaining: number; resetIn: number } {
   const now = Date.now();
+
+  // LRU eviction: if map is at capacity, delete oldest entry
+  if (rateMap.size >= RATE_LIMIT_MAX_ENTRIES && !rateMap.has(ip)) {
+    const firstKey = rateMap.keys().next().value;
+    if (firstKey !== undefined) rateMap.delete(firstKey);
+  }
+
   const entry = rateMap.get(ip);
 
   if (!entry) {
@@ -254,15 +269,21 @@ function initDatabase() {
     listRecent: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC LIMIT 500`),
     deleteById: db.prepare(`DELETE FROM submissions WHERE id = ?`),
     updateById: db.prepare(`UPDATE submissions SET first_name = ?, last_name = ?, email = ?, phone = ?, address1 = ?, address2 = ?, city = ?, region = ?, zip = ?, country = ?, window = ?, marketing_optin = ? WHERE id = ?`),
-    deleteMany: db.prepare(`DELETE FROM submissions WHERE id IN (${Array(500).fill('?').join(',')})`),
     countAll: db.prepare(`SELECT COUNT(*) as count FROM submissions`),
     countToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE DATE(submitted_at) = DATE('now')`),
     countByIPToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE ip = ? AND DATE(submitted_at) = DATE('now')`),
   };
 }
 
-const sql = initDatabase();
-const { db, insert, listAll, listRecent, deleteById, updateById, deleteMany, countAll, countToday, countByIPToday } = sql;
+let sql;
+try {
+  sql = initDatabase();
+} catch (e: any) {
+  error("Database initialization failed", { error: e.message });
+  console.error("FATAL: Cannot initialize database at", DB_PATH);
+  process.exit(1);
+}
+const { db, insert, listAll, listRecent, deleteById, updateById, countAll, countToday, countByIPToday } = sql;
 
 // Periodic DB integrity check
 setInterval(() => {
@@ -315,6 +336,12 @@ function formatDate(d: string): string {
 // ════════════════════════════════════════════
 // BASIC AUTH
 // ════════════════════════════════════════════
+function secureCompare(a: string, b: string): boolean {
+  const hashA = createHash("sha256").update(a).digest();
+  const hashB = createHash("sha256").update(b).digest();
+  return timingSafeEqual(hashA, hashB);
+}
+
 function checkBasicAuth(headers: Record<string, string | undefined>): boolean {
   const auth = headers.authorization;
   if (!auth || !auth.startsWith("Basic ")) return false;
@@ -324,7 +351,7 @@ function checkBasicAuth(headers: Record<string, string | undefined>): boolean {
     if (idx === -1) return false;
     const u = creds.substring(0, idx);
     const p = creds.substring(idx + 1);
-    return u === ADMIN_USER && p === ADMIN_PASS;
+    return secureCompare(u, ADMIN_USER) && secureCompare(p, ADMIN_PASS);
   } catch {
     return false;
   }
@@ -391,7 +418,7 @@ Export CSV: https://evergreen-form.ashbi.ca/export`;
 function setSecurityHeaders(outHeaders: Record<string, string>): void {
   // Strict CSP — only allow self, Google Fonts, inline styles
   outHeaders["Content-Security-Policy"] =
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-ancestors https://*.myshopify.com https://evergreen-form.ashbi.ca *;";
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-ancestors https://*.myshopify.com https://evergreen-form.ashbi.ca;";
   outHeaders["X-Content-Type-Options"] = "nosniff";
   outHeaders["X-Frame-Options"] = "SAMEORIGIN";
   outHeaders["Referrer-Policy"] = "strict-origin-when-cross-origin";
@@ -963,7 +990,7 @@ app.post("/submit", async ({ body, request, set }) => {
   // Notify via email
   if (SUBMISSION_EMAIL_ON) {
     await notifySubmission({
-      first_name, last_name, email, phone: "", address1, city: "", region, zip, country: "", address2, notes: windowVal ? `Window: ${windowVal}` : "", marketing_optin: marketing_optin === 1, ip, id,
+      first_name, last_name, email, phone: sanitizeString(data.phone || ""), address1, city: sanitizeString(data.city || ""), region, zip, country: sanitizeString(data.country || ""), address2, notes: windowVal ? `Window: ${windowVal}` : "", marketing_optin: marketing_optin === 1, ip, id,
     });
   }
 
@@ -1200,18 +1227,23 @@ app.put("/admin/edit/:id", async ({ headers, params, body, set }) => {
     return { success: false, message: "Invalid ID" };
   }
   const b = body as Record<string, any>;
+  const email = sanitizeString(b.email)?.toLowerCase();
+  if (email && !validateEmail(email)) {
+    set.status = 400;
+    return { success: false, message: "Invalid email." };
+  }
   const result = updateById.run(
-    String(b.first_name || ""),
-    String(b.last_name || ""),
-    String(b.email || ""),
-    String(b.phone || ""),
-    String(b.address1 || ""),
-    String(b.address2 || ""),
-    String(b.city || ""),
-    String(b.region || ""),
-    String(b.zip || ""),
-    String(b.country || ""),
-    String(b.window || ""),
+    sanitizeString(b.first_name),
+    sanitizeString(b.last_name),
+    email || "",
+    sanitizeString(b.phone),
+    sanitizeString(b.address1),
+    sanitizeString(b.address2),
+    sanitizeString(b.city),
+    sanitizeString(b.region),
+    sanitizeString(b.zip),
+    sanitizeString(b.country),
+    sanitizeString(b.window),
     b.marketing_optin ? 1 : 0,
     id
   );
@@ -1232,6 +1264,10 @@ app.post("/admin/bulk-delete", async ({ headers, body, set }) => {
   if (!ids.length) {
     set.status = 400;
     return { success: false, message: "No IDs provided" };
+  }
+  if (ids.length > 100) {
+    set.status = 400;
+    return { success: false, message: "Max 100 IDs per request." };
   }
   // Use raw SQL for dynamic IN clause since prepared statement has fixed param count
   const placeholders = ids.map(() => "?").join(",");
