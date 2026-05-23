@@ -255,6 +255,13 @@ function initDatabase() {
     // already exists — safe to ignore
   }
 
+  // Migrate: add status column if missing
+  try {
+    db.exec(`ALTER TABLE submissions ADD COLUMN status TEXT DEFAULT 'pending'`);
+  } catch {
+    // already exists — safe to ignore
+  }
+
   // Indexes for common queries
   db.exec("CREATE INDEX IF NOT EXISTS idx_submissions_email ON submissions(email)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_submissions_submitted_at ON submissions(submitted_at DESC)");
@@ -272,6 +279,9 @@ function initDatabase() {
     countAll: db.prepare(`SELECT COUNT(*) as count FROM submissions`),
     countToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE DATE(submitted_at) = DATE('now')`),
     countByIPToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE ip = ? AND DATE(submitted_at) = DATE('now')`),
+    updateStatus: db.prepare(`UPDATE submissions SET status = ? WHERE id = ?`),
+    updateNotes: db.prepare(`UPDATE submissions SET notes = ? WHERE id = ?`),
+    countByStatus: db.prepare(`SELECT status, COUNT(*) as count FROM submissions GROUP BY status`),
   };
 }
 
@@ -283,7 +293,10 @@ try {
   console.error("FATAL: Cannot initialize database at", DB_PATH);
   process.exit(1);
 }
-const { db, insert, listAll, listRecent, deleteById, updateById, countAll, countToday, countByIPToday } = sql;
+const { db, insert, listAll, listRecent, deleteById, updateById, countAll, countToday, countByIPToday, updateStatus, updateNotes, countByStatus } = sql;
+
+const STATUSES = ["pending", "preparing", "shipped", "delivered", "cancelled"] as const;
+type Status = typeof STATUSES[number];
 
 // Periodic DB integrity check
 setInterval(() => {
@@ -418,9 +431,11 @@ Export CSV: https://evergreen-form.ashbi.ca/export`;
 function setSecurityHeaders(outHeaders: Record<string, string>): void {
   // Strict CSP — only allow self, Google Fonts, inline styles
   outHeaders["Content-Security-Policy"] =
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-ancestors https://*.myshopify.com https://evergreen-form.ashbi.ca;";
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; frame-ancestors https://eatevergreen.com https://*.myshopify.com https://evergreen-form.ashbi.ca;";
   outHeaders["X-Content-Type-Options"] = "nosniff";
-  outHeaders["X-Frame-Options"] = "SAMEORIGIN";
+  // X-Frame-Options omitted — CSP frame-ancestors handles framing policy
+  // Explicitly unset to override Elysia default DENY
+  outHeaders["X-Frame-Options"] = "";
   outHeaders["Referrer-Policy"] = "strict-origin-when-cross-origin";
   outHeaders["Cache-Control"] = "no-store";
 }
@@ -679,12 +694,12 @@ body {
     <input type="text" name="zip" placeholder="zip code" required maxlength="20">
   </div>
   <div class="section-label">Preferred Delivery Window</div>
-  <div class="section-hint">please select only one</div>
+  <div class="section-hint">please select only one - all delivery windows in local time</div>
   <div class="delivery-row">
-    <label><input type="radio" name="window" value="tue-am" required><span>Tuesday 9-11am CT</span></label>
-    <label><input type="radio" name="window" value="tue-pm"><span>Tuesday 4-6pm CT</span></label>
-    <label><input type="radio" name="window" value="thu-am"><span>Thursday 9-11am CT</span></label>
-    <label><input type="radio" name="window" value="thu-pm"><span>Thursday 4-6pm CT</span></label>
+    <label><input type="radio" name="window" value="tue-am" required><span>Tuesday 9-11am</span></label>
+    <label><input type="radio" name="window" value="tue-pm"><span>Tuesday 4-6pm</span></label>
+    <label><input type="radio" name="window" value="thu-am"><span>Thursday 9-11am</span></label>
+    <label><input type="radio" name="window" value="thu-pm"><span>Thursday 4-6pm</span></label>
   </div>
   <div class="disclaimer">
     Orders will be delivered via Instacart or local grocery delivery service.
@@ -839,7 +854,7 @@ const app = new Elysia()
 
 // ── CORS ──
 if (ENABLE_CORS) {
-  app.use(cors({ origin: ["https://*.myshopify.com", "https://evergreen-form.ashbi.ca", "https://ashbi.ca"], credentials: false }));
+  app.use(cors({ origin: ["https://eatevergreen.com", "https://*.myshopify.com", "https://evergreen-form.ashbi.ca", "https://ashbi.ca"], credentials: false }));
 }
 
 // ════════════════════════════════════════════
@@ -1011,11 +1026,32 @@ app.get("/admin", ({ headers, set }) => {
   const today = ((countToday.get() as any).count as number) || 0;
   const rows = (listRecent.all() as any[]) || [];
 
+  // Status counts
+  const statusCounts: Record<string, number> = {};
+  for (const s of STATUSES) statusCounts[s] = 0;
+  const srows = (countByStatus.all() as any[]) || [];
+  for (const s of srows) {
+    if (statusCounts.hasOwnProperty(s.status)) statusCounts[s.status] = s.count;
+  }
+
+  const statusBadge = (status: string) => {
+    const s = (status || "pending").toLowerCase();
+    const labels: Record<string, string> = {
+      pending: '<span class="badge badge-pending">Pending</span>',
+      preparing: '<span class="badge badge-preparing">Preparing</span>',
+      shipped: '<span class="badge badge-shipped">Shipped</span>',
+      delivered: '<span class="badge badge-delivered">Delivered</span>',
+      cancelled: '<span class="badge badge-cancelled">Cancelled</span>',
+    };
+    return labels[s] || labels["pending"];
+  };
+
   let tableRows = "";
   for (const r of rows) {
     const name = escapeHtml(String(r.first_name || "")) + " " + escapeHtml(String(r.last_name || ""));
     const addr = escapeHtml(String(r.address1 || "") + (r.address2 ? ", " + String(r.address2) : ""));
-    tableRows += `<tr data-id="${r.id}">
+    const st = (r.status || "pending").toLowerCase();
+    tableRows += `<tr data-id="${r.id}" data-status="${st}" data-notes="${escapeHtml(String(r.notes || ""))}">
       <td><input type="checkbox" class="row-check" value="${r.id}"></td>
       <td>${r.id}</td>
       <td class="td-name">${name}</td>
@@ -1027,11 +1063,13 @@ app.get("/admin", ({ headers, set }) => {
       <td class="td-zip">${escapeHtml(String(r.zip || ""))}</td>
       <td class="td-country">${escapeHtml(String(r.country || ""))}</td>
       <td class="td-window">${escapeHtml(String(r.window || ""))}</td>
+      <td>${statusBadge(r.status)}</td>
       <td class="td-optin">${r.marketing_optin ? "Yes" : "No"}</td>
       <td>${formatDate(r.submitted_at)}</td>
       <td class="actions">
+        <button class="btn-small btn-ship" onclick="shipRow(${r.id})" title="Mark as Shipped">Ship</button>
         <button class="btn-small btn-edit" onclick="editRow(${r.id})">Edit</button>
-        <button class="btn-small btn-delete" onclick="deleteRow(${r.id})">Delete</button>
+        <button class="btn-small btn-delete" onclick="deleteRow(${r.id})">Del</button>
       </td>
     </tr>`;
   }
@@ -1061,6 +1099,20 @@ body{font-family:'Fredoka',system-ui,sans-serif;background:var(--bg);color:var(-
 .btn-delete:hover{background:#a31818;}
 .btn-edit{background:#2d7d32;}
 .btn-edit:hover{background:#1b5e20;}
+.btn-ship{background:#1565c0;color:#fff;}
+.btn-ship:hover{background:#0d47a1;}
+.badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;white-space:nowrap;}
+.badge-pending{background:#FFF3E0;color:#E65100;}
+.badge-preparing{background:#E3F2FD;color:#1565C0;}
+.badge-shipped{background:#E8F5E9;color:#2E7D32;}
+.badge-delivered{background:#E8F5E9;color:#1B5E20;}
+.badge-cancelled{background:#FFEBEE;color:#C62828;}
+.filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:16px;}
+.filter-btn{background:transparent;color:var(--gray);padding:5px 14px;border-radius:999px;border:1.5px solid #e0e0e0;font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;transition:all .15s;}
+.filter-btn:hover{border-color:var(--coral);color:var(--coral);}
+.filter-active{background:var(--coral);color:var(--white);border-color:var(--coral);}
+.filter-active:hover{background:var(--coral-dark);color:var(--white);}
+tr.hidden-row{display:none;}
 .stats{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap;}
 .stat{background:var(--white);padding:16px 24px;border-radius:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);text-align:center;min-width:110px;}
 .stat-num{font-size:28px;font-weight:700;color:var(--coral);}
@@ -1091,12 +1143,23 @@ tr.editing td{background:#fff9c4;}
 <div class="stats">
   <div class="stat"><div class="stat-num">${total}</div><div class="stat-label">Total</div></div>
   <div class="stat"><div class="stat-num">${today}</div><div class="stat-label">Today</div></div>
+  <div class="stat"><div class="stat-num" style="color:#F2786D">${statusCounts.pending}</div><div class="stat-label">Pending</div></div>
+  <div class="stat"><div class="stat-num" style="color:#2d7d32">${statusCounts.shipped + statusCounts.delivered}</div><div class="stat-label">Fulfilled</div></div>
   <div class="stat"><div class="stat-num">${errorCount}</div><div class="stat-label">Errors</div></div>
   <div class="stat"><div class="stat-num">${((Date.now()-startTime)/1000/60).toFixed(0)}</div><div class="stat-label">Uptime (min)</div></div>
 </div>
 <div class="toolbar">
   <div class="toolbar-left">
     <button class="btn btn-outline" onclick="toggleAll()">Select All</button>
+    <select id="bulk-status" class="btn btn-outline" style="padding:8px 12px">
+      <option value="">Bulk Status...</option>
+      <option value="pending">Pending</option>
+      <option value="preparing">Preparing</option>
+      <option value="shipped">Shipped</option>
+      <option value="delivered">Delivered</option>
+      <option value="cancelled">Cancelled</option>
+    </select>
+    <button class="btn btn-outline" onclick="bulkStatus()">Apply</button>
     <button class="btn btn-delete" onclick="bulkDelete()">Delete Selected</button>
   </div>
   <div class="toolbar-right">
@@ -1104,18 +1167,32 @@ tr.editing td{background:#fff9c4;}
     <a class="btn btn-outline" href="/">View Form</a>
   </div>
 </div>
+<div class="filters">
+  <span style="font-size:12px;color:#888;margin-right:8px;font-weight:600">Filter:</span>
+  <button class="filter-btn filter-active" onclick="filterStatus('all', event)">All</button>
+  <button class="filter-btn" onclick="filterStatus('pending', event)">Pending</button>
+  <button class="filter-btn" onclick="filterStatus('preparing', event)">Preparing</button>
+  <button class="filter-btn" onclick="filterStatus('shipped', event)">Shipped</button>
+  <button class="filter-btn" onclick="filterStatus('delivered', event)">Delivered</button>
+  <button class="filter-btn" onclick="filterStatus('cancelled', event)">Cancelled</button>
+  <span style="margin:0 8px;color:#ddd">|</span>
+  <button class="filter-btn" onclick="filterWindow('Tue 9-11', event)">Tue 9-11</button>
+  <button class="filter-btn" onclick="filterWindow('Tue 4-6', event)">Tue 4-6</button>
+  <button class="filter-btn" onclick="filterWindow('Thu 9-11', event)">Thu 9-11</button>
+  <button class="filter-btn" onclick="filterWindow('Thu 4-6', event)">Thu 4-6</button>
+</div>
 <div class="table-wrap">
   <table>
     <thead><tr>
       <th style="width:30px"><input type="checkbox" id="check-all" onclick="toggleAll()"></th>
       <th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Address</th><th>City</th>
-      <th>Region</th><th>Zip</th><th>Country</th><th>Window</th><th>Opt-in</th><th>Date</th><th>Actions</th>
+      <th>Region</th><th>Zip</th><th>Country</th><th>Window</th><th>Status</th><th>Opt-in</th><th>Date</th><th>Actions</th>
     </tr></thead>
-    <tbody>${rows.length===0?'<tr><td colspan="14" class="empty">No submissions yet.</td></tr>':tableRows}</tbody>
+    <tbody>${rows.length===0?'<tr><td colspan="15" class="empty">No submissions yet.</td></tr>':tableRows}</tbody>
   </table>
 </div>
 <div class="modal" id="edit-modal"><div class="modal-box">
-  <h3>Edit Submission</h3>
+  <h3>Edit Submission #<span id="edit-id-display"></span></h3>
   <input type="hidden" id="edit-id">
   <label>First Name</label><input id="edit-first">
   <label>Last Name</label><input id="edit-last">
@@ -1128,6 +1205,16 @@ tr.editing td{background:#fff9c4;}
   <label>Country</label><input id="edit-country">
   <label>Window</label><input id="edit-window">
   <label>Marketing Opt-in</label><input id="edit-optin" placeholder="yes or no">
+  <label>Status</label>
+  <select id="edit-status" style="width:100%;padding:10px 14px;border:2px solid var(--coral);border-radius:12px;font-family:inherit;font-size:14px;outline:none">
+    <option value="pending">Pending</option>
+    <option value="preparing">Preparing</option>
+    <option value="shipped">Shipped</option>
+    <option value="delivered">Delivered</option>
+    <option value="cancelled">Cancelled</option>
+  </select>
+  <label>Internal Notes</label>
+  <textarea id="edit-notes" style="width:100%;padding:10px 14px;border:2px solid var(--coral);border-radius:12px;font-family:inherit;font-size:14px;outline:none;resize:vertical;min-height:60px" placeholder="Instacart order #, delivery notes..."></textarea>
   <div class="modal-actions">
     <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
     <button class="btn" onclick="saveEdit()">Save</button>
@@ -1146,6 +1233,12 @@ async function deleteRow(id){
   if(j.success)document.querySelector('tr[data-id="'+id+'"]').remove();
   else alert(j.message||'Delete failed');
 }
+async function shipRow(id){
+  if(!confirm('Mark #'+id+' as shipped?'))return;
+  fetch('/admin/status/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'shipped'})})
+    .then(r=>r.json()).then(j=>{if(j.success)location.reload();else alert(j.message||'Update failed')})
+    .catch(()=>alert('Network error'));
+}
 async function bulkDelete(){
   const ids=Array.from(document.querySelectorAll('.row-check:checked')).map(c=>parseInt(c.value));
   if(!ids.length){alert('No rows selected');return;}
@@ -1155,9 +1248,41 @@ async function bulkDelete(){
   if(j.success)ids.forEach(id=>{const tr=document.querySelector('tr[data-id="'+id+'"]');if(tr)tr.remove();});
   else alert(j.message||'Bulk delete failed');
 }
+async function bulkStatus(){
+  const sel=$('bulk-status');const status=sel.value;
+  if(!status){alert('Select a status');return;}
+  const ids=Array.from(document.querySelectorAll('.row-check:checked')).map(c=>parseInt(c.value));
+  if(!ids.length){alert('No rows selected');return;}
+  if(!confirm('Set '+ids.length+' submissions to '+status+'?'))return;
+  fetch('/admin/bulk-status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,status})})
+    .then(r=>r.json()).then(j=>{if(j.success)location.reload();else alert(j.message||'Bulk status failed')})
+    .catch(()=>alert('Network error'));
+}
+function filterStatus(s, evt){
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('filter-active'));
+  if(s==='all'){
+    evt.target.classList.add('filter-active');
+    document.querySelectorAll('tr[data-id]').forEach(r=>r.classList.remove('hidden-row'));
+  }else{
+    document.querySelectorAll('.filter-btn').forEach(b=>{if(b.textContent.toLowerCase()===s)b.classList.add('filter-active')});
+    document.querySelectorAll('tr[data-id]').forEach(r=>{
+      if(r.dataset.status===s)r.classList.remove('hidden-row');
+      else r.classList.add('hidden-row');
+    });
+  }
+}
+function filterWindow(w, evt){
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('filter-active'));
+  evt.target.classList.add('filter-active');
+  document.querySelectorAll('tr[data-id]').forEach(r=>{
+    const td=r.querySelector('.td-window');
+    if(td&&td.textContent.includes(w))r.classList.remove('hidden-row');
+    else r.classList.add('hidden-row');
+  });
+}
 function editRow(id){
   const tr=document.querySelector('tr[data-id="'+id+'"]');if(!tr)return;
-  $('edit-id').value=id;
+  $('edit-id').value=id;$('edit-id-display').textContent=id;
   $('edit-first').value=tr.querySelector('.td-name').textContent.split(' ')[0]||'';
   $('edit-last').value=tr.querySelector('.td-name').textContent.split(' ').slice(1).join(' ')||'';
   $('edit-email').value=tr.querySelector('.td-email').textContent;
@@ -1169,6 +1294,9 @@ function editRow(id){
   $('edit-country').value=tr.querySelector('.td-country').textContent;
   $('edit-window').value=tr.querySelector('.td-window').textContent;
   $('edit-optin').value=tr.querySelector('.td-optin').textContent;
+  const st=tr.dataset.status||'pending';
+  $('edit-status').value=st;
+  $('edit-notes').value=tr.dataset.notes||'';
   $('edit-modal').classList.add('show');
 }
 function closeModal(){$('edit-modal').classList.remove('show');}
@@ -1187,9 +1315,17 @@ async function saveEdit(){
     window:$('edit-window').value,
     marketing_optin:$('edit-optin').value.toLowerCase()==='yes'?1:0,
   };
-  const r=await fetch('/admin/edit/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const r=await fetch('/admin/edit/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>null);
+  if(!r){alert('Network error');return;}
   const j=await r.json();
-  if(j.success)location.reload();else alert(j.message||'Update failed');
+  if(!j.success){alert(j.message||'Update failed');return;}
+  const newStatus=$('edit-status').value;
+  const newNotes=$('edit-notes').value;
+  // Always send status (dropdown always has a value)
+  await fetch('/admin/status/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:newStatus})});
+  // Always send notes (server handles empty string = clear)
+  await fetch('/admin/notes/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({notes:newNotes})});
+  location.reload();
 }
 </script>
 </body></html>`;
@@ -1277,6 +1413,68 @@ app.post("/admin/bulk-delete", async ({ headers, body, set }) => {
   return { success: true, deleted: result.changes };
 });
 
+// -- Admin update status (single) --
+app.put("/admin/status/:id", async ({ headers, params, body, set }) => {
+  setSecurityHeaders(set.headers as Record<string, string>);
+  if (!checkBasicAuth(headers as Record<string, string | undefined>)) {
+    set.status = 401;
+    set.headers["WWW-Authenticate"] = 'Basic realm="Evergreen Admin"';
+    return { success: false, message: "Unauthorized" };
+  }
+  const id = parseInt(params.id, 10);
+  if (isNaN(id)) { set.status = 400; return { success: false, message: "Invalid ID" }; }
+  const b = body as Record<string, any>;
+  const status = String(b.status || "").toLowerCase();
+  if (!(STATUSES as readonly string[]).includes(status)) {
+    set.status = 400;
+    return { success: false, message: "Invalid status. Use: " + STATUSES.join(", ") };
+  }
+  const result = updateStatus.run(status, id);
+  info("Status updated", { id, status, changes: result.changes });
+  return { success: true, updated: result.changes };
+});
+
+// -- Admin bulk status update --
+app.post("/admin/bulk-status", async ({ headers, body, set }) => {
+  setSecurityHeaders(set.headers as Record<string, string>);
+  if (!checkBasicAuth(headers as Record<string, string | undefined>)) {
+    set.status = 401;
+    set.headers["WWW-Authenticate"] = 'Basic realm="Evergreen Admin"';
+    return { success: false, message: "Unauthorized" };
+  }
+  const b = body as Record<string, any>;
+  const ids = (b.ids || []).map((x: any) => parseInt(x, 10)).filter((x: number) => !isNaN(x));
+  const status = String(b.status || "").toLowerCase();
+  if (!ids.length) { set.status = 400; return { success: false, message: "No IDs provided" }; }
+  if (ids.length > 100) { set.status = 400; return { success: false, message: "Max 100 IDs per request." }; }
+  if (!(STATUSES as readonly string[]).includes(status)) {
+    set.status = 400;
+    return { success: false, message: "Invalid status. Use: " + STATUSES.join(", ") };
+  }
+  const placeholders = ids.map(() => "?").join(",");
+  const stmt = db.prepare(`UPDATE submissions SET status = ? WHERE id IN (${placeholders})`);
+  const result = stmt.run(status, ...ids);
+  info("Bulk status update", { count: ids.length, status, updated: result.changes });
+  return { success: true, updated: result.changes };
+});
+
+// -- Admin update notes --
+app.put("/admin/notes/:id", async ({ headers, params, body, set }) => {
+  setSecurityHeaders(set.headers as Record<string, string>);
+  if (!checkBasicAuth(headers as Record<string, string | undefined>)) {
+    set.status = 401;
+    set.headers["WWW-Authenticate"] = 'Basic realm="Evergreen Admin"';
+    return { success: false, message: "Unauthorized" };
+  }
+  const id = parseInt(params.id, 10);
+  if (isNaN(id)) { set.status = 400; return { success: false, message: "Invalid ID" }; }
+  const b = body as Record<string, any>;
+  const notes = String(b.notes || "").slice(0, 1000);
+  const result = updateNotes.run(notes, id);
+  info("Notes updated", { id, changes: result.changes });
+  return { success: true, updated: result.changes };
+});
+
 // -- CSV export (Klaviyo format) --
 app.get("/export", ({ headers, set }) => {
   setSecurityHeaders(set.headers as Record<string, string>);
@@ -1286,10 +1484,10 @@ app.get("/export", ({ headers, set }) => {
     return "Unauthorized";
   }
   const rows = (listAll.all() as any[]) || [];
-  let csv = "Email,$first_name,$last_name,$phone_number,$address1,$address2,$city,$region,$zip,$country,Notes,Marketing_Opt_In,Submitted_At\n";
+  let csv = "Email,$first_name,$last_name,$phone_number,$address1,$address2,$city,$region,$zip,$country,Status,Notes,Marketing_Opt_In,Submitted_At\n";
   for (const r of rows) {
     const esc = (v: string) => `"${(v || "").replace(/"/g, '""')}"`;
-    csv += `${esc(r.email)},${esc(r.first_name)},${esc(r.last_name)},${esc(r.phone)},${esc(r.address1)},${esc(r.address2)},${esc(r.city)},${esc(r.region)},${esc(r.zip)},${esc(r.country)},${esc(r.notes)},${r.marketing_optin ? "Yes" : "No"},${esc(r.submitted_at)}\n`;
+    csv += `${esc(r.email)},${esc(r.first_name)},${esc(r.last_name)},${esc(r.phone)},${esc(r.address1)},${esc(r.address2)},${esc(r.city)},${esc(r.region)},${esc(r.zip)},${esc(r.country)},${esc(r.status||'pending')},${esc(r.notes)},${r.marketing_optin ? "Yes" : "No"},${esc(r.submitted_at)}\n`;
   }
   set.headers["Content-Type"] = "text/csv";
   set.headers["Content-Disposition"] = `attachment; filename="evergreen-klaviyo-${new Date().toISOString().slice(0, 10)}.csv"`;
