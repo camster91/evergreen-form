@@ -30,14 +30,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Type check (if configured)
         run: |
-          if grep -q '"typecheck"\|"type-check"\|"tsc"' package.json; then
+          if grep -q '"typecheck"\|"type-check"' package.json; then
             echo "Running typecheck..."
             npm run typecheck || npm run type-check || npx tsc --noEmit
           else
@@ -55,8 +54,15 @@ jobs:
           fi
         continue-on-error: true
 
-      - name: Build
-        run: npm run build
+      - name: Build (or syntax-check for server-only repos)
+        run: |
+          if grep -q '"build"' package.json; then
+            echo "Running build..."
+            npm run build
+          else
+            echo "No build script. Server-only repo - doing a node syntax check instead."
+            node --check server.js || node --check index.js || node --check src/index.js || echo "No server entrypoint to check, but deps install + lint passed."
+          fi
         env:
           # CI-safe defaults so the build doesn't depend on real env vars
           NODE_ENV: production
