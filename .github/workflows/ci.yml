@@ -1,0 +1,63 @@
+name: CI Build
+
+# Build-only workflow: verifies the project builds cleanly. No deploy, no secrets required.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check (if configured)
+        run: |
+          if grep -q '"typecheck"\|"type-check"\|"tsc"' package.json; then
+            echo "Running typecheck..."
+            npm run typecheck || npm run type-check || npx tsc --noEmit
+          else
+            echo "No typecheck script found, skipping."
+          fi
+        continue-on-error: true
+
+      - name: Lint (if configured)
+        run: |
+          if grep -q '"lint"' package.json; then
+            echo "Running lint..."
+            npm run lint
+          else
+            echo "No lint script found, skipping."
+          fi
+        continue-on-error: true
+
+      - name: Build
+        run: npm run build
+        env:
+          # CI-safe defaults so the build doesn't depend on real env vars
+          NODE_ENV: production
+          CI: true
