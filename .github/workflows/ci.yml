@@ -1,7 +1,7 @@
 name: CI Build
 
 # Build-only workflow: verifies the project builds cleanly. No deploy, no secrets required.
-# This repo has no package-lock.json, so we use `npm install` instead of `npm ci`.
+# This project uses Bun as its build tool.
 
 on:
   push:
@@ -27,19 +27,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '20'
+          bun-version: latest
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       - name: Type check (if configured)
         run: |
           if grep -q '"typecheck"\|"type-check"' package.json; then
-            echo "Running typecheck..."
-            npm run typecheck || npm run type-check || npx tsc --noEmit
+            bun run typecheck || bun run type-check || bun x tsc --noEmit
           else
             echo "No typecheck script found, skipping."
           fi
@@ -48,23 +47,14 @@ jobs:
       - name: Lint (if configured)
         run: |
           if grep -q '"lint"' package.json; then
-            echo "Running lint..."
-            npm run lint
+            bun run lint
           else
             echo "No lint script found, skipping."
           fi
         continue-on-error: true
 
-      - name: Build (or syntax-check for server-only repos)
-        run: |
-          if grep -q '"build"' package.json; then
-            echo "Running build..."
-            npm run build
-          else
-            echo "No build script. Server-only repo - doing a node syntax check instead."
-            node --check server.js || node --check index.js || node --check src/index.js || echo "No server entrypoint to check, but deps install + lint passed."
-          fi
+      - name: Build
+        run: bun run build
         env:
-          # CI-safe defaults so the build doesn't depend on real env vars
           NODE_ENV: production
           CI: true
