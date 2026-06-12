@@ -243,6 +243,7 @@ function initDatabase() {
       notes TEXT,
       marketing_optin INTEGER DEFAULT 0,
       window TEXT,
+      delivery_instructions TEXT,
       ip TEXT,
       submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -262,6 +263,13 @@ function initDatabase() {
     // already exists — safe to ignore
   }
 
+  // Migrate: add delivery_instructions column if missing
+  try {
+    db.exec(`ALTER TABLE submissions ADD COLUMN delivery_instructions TEXT`);
+  } catch {
+    // already exists — safe to ignore
+  }
+
   // Indexes for common queries
   db.exec("CREATE INDEX IF NOT EXISTS idx_submissions_email ON submissions(email)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_submissions_submitted_at ON submissions(submitted_at DESC)");
@@ -269,13 +277,13 @@ function initDatabase() {
   return {
     db,
     insert: db.prepare(`
-      INSERT INTO submissions (first_name, last_name, email, phone, address1, address2, city, region, zip, country, notes, window, marketing_optin, ip)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO submissions (first_name, last_name, email, phone, address1, address2, city, region, zip, country, notes, window, delivery_instructions, marketing_optin, ip)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
     listAll: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC`),
     listRecent: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC LIMIT 500`),
     deleteById: db.prepare(`DELETE FROM submissions WHERE id = ?`),
-    updateById: db.prepare(`UPDATE submissions SET first_name = ?, last_name = ?, email = ?, phone = ?, address1 = ?, address2 = ?, city = ?, region = ?, zip = ?, country = ?, window = ?, marketing_optin = ? WHERE id = ?`),
+    updateById: db.prepare(`UPDATE submissions SET first_name = ?, last_name = ?, email = ?, phone = ?, address1 = ?, address2 = ?, city = ?, region = ?, zip = ?, country = ?, window = ?, delivery_instructions = ?, marketing_optin = ? WHERE id = ?`),
     countAll: db.prepare(`SELECT COUNT(*) as count FROM submissions`),
     countToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE DATE(submitted_at) = DATE('now')`),
     countByIPToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE ip = ? AND DATE(submitted_at) = DATE('now')`),
@@ -396,6 +404,7 @@ async function notifySubmission(data: {
   phone?: string;
   address2?: string;
   notes?: string;
+  delivery_instructions?: string;
   marketing_optin: boolean;
   ip: string;
   id: number;
@@ -413,6 +422,7 @@ Region: ${data.region}
 ZIP: ${data.zip}
 Country: ${data.country}
 Notes: ${data.notes || "(none)"}
+Delivery Instructions: ${data.delivery_instructions || "(none)"}
 Marketing Opt-in: ${data.marketing_optin ? "Yes" : "No"}
 IP: ${data.ip}
 ID: ${data.id}
@@ -456,27 +466,25 @@ const FORM_PAGE = `<!DOCTYPE html>
 body {
   font-family: 'Fredoka', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #FFFFFF;
-  width: 100%;
-  height: 100%;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  margin: 0;
+  padding: 0;
   -webkit-font-smoothing: antialiased;
 }
 .card {
   width: 100%;
   max-width: 100%;
   background: #FFFFFF;
-  padding: 20px 16px;
+  padding: 12px 16px; /* was 20px 16px — saves 16px */
 }
 .input-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
-  margin-bottom: 14px;
+  gap: 10px; /* was 14px */
+  margin-bottom: 10px; /* was 14px */
 }
 .input-grid input, .full input {
   width: 100%;
-  padding: 14px 18px;
+  padding: 12px 16px; /* was 14px 18px */
   border: 2px solid #F06464;
   border-radius: 999px;
   font-family: 'Fredoka', sans-serif;
@@ -487,28 +495,42 @@ body {
   outline: none;
   transition: box-shadow 0.2s, border-color 0.2s;
 }
-.input-grid input::placeholder, .full input::placeholder {
+.input-grid input::placeholder, .full input::placeholder, .full textarea::placeholder {
   color: #EDA8A8;
   font-weight: 600;
 }
-.input-grid input:focus, .full input:focus {
+.input-grid input:focus, .full input:focus, .full textarea:focus {
   border-color: #F06464;
   box-shadow: 0 0 0 4px rgba(240,100,100,0.15);
 }
-.full { margin-bottom: 14px; }
+.full { margin-bottom: 10px; } /* was 14px */
+.full textarea {
+  width: 100%;
+  padding: 10px 14px; /* was 12px 16px */
+  border: 2px solid #F06464;
+  border-radius: 12px;
+  font-family: 'Fredoka', sans-serif;
+  font-size: 15px;
+  font-weight: 400;
+  color: #2C2C2C;
+  background: #fff;
+  outline: none;
+  transition: box-shadow 0.2s, border-color 0.2s;
+  resize: vertical;
+}
 .section-label {
   text-align: center;
-  font-size: 22px;
+  font-size: 18px; /* was 20px */
   font-weight: 700;
   color: #F06464;
-  margin: 24px 0 4px;
+  margin: 10px 0 0; /* was 14px 0 2px */
 }
 .section-hint {
   text-align: center;
-  font-size: 13px;
+  font-size: 11px; /* was 12px */
   color: #F06464;
   font-weight: 400;
-  margin-bottom: 16px;
+  margin-bottom: 8px; /* was 12px */
 }
 .delivery-row {
   display: flex;
@@ -554,10 +576,10 @@ body {
 }
 .disclaimer {
   text-align: center;
-  font-size: 13px;
+  font-size: 12px; /* was 13px */
   color: #F06464;
   font-weight: 400;
-  margin-bottom: 16px;
+  margin-bottom: 8px; /* was 16px */
 }
 .disclaimer a {
   color: #F2786D;
@@ -567,10 +589,10 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  font-size: 13px;
+  font-size: 12px; /* was 13px */
   color: #F06464;
   font-weight: 400;
-  margin-bottom: 16px;
+  margin-bottom: 10px; /* was 16px */
   cursor: pointer;
 }
 .opt-in input[type="checkbox"] {
@@ -603,26 +625,26 @@ body {
 }
 .submit-btn {
   width: 100%;
-  padding: 18px 24px;
+  padding: 14px 24px; /* was 18px 24px */
   border: none;
   border-radius: 999px;
   font-family: 'Fredoka', sans-serif;
-  font-size: 20px;
+  font-size: 18px; /* was 20px */
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: #fff;
   cursor: pointer;
   background: linear-gradient(180deg, #F87D7D 0%, #F4525C 100%);
-  box-shadow: 0 8px 0 #C53838;
+  box-shadow: 0 6px 0 #C53838; /* was 0 8px 0 */
   transition: transform 0.08s, box-shadow 0.08s;
 }
 .submit-btn:hover {
   transform: translateY(2px);
-  box-shadow: 0 6px 0 #C53838;
+  box-shadow: 0 4px 0 #C53838; /* was 0 6px 0 */
 }
 .submit-btn:active {
-  transform: translateY(6px);
+  transform: translateY(4px);
   box-shadow: 0 2px 0 #C53838;
 }
 .submit-btn:disabled {
@@ -692,6 +714,9 @@ body {
     <input type="text" name="address2" placeholder="apartment / unit #" maxlength="128">
     <input type="text" name="region" placeholder="state" required maxlength="64">
     <input type="text" name="zip" placeholder="zip code" required maxlength="20">
+  </div>
+  <div class="full">
+    <textarea name="delivery_instructions" placeholder="Additional delivery instructions; Example - gate code" rows="2" maxlength="500"></textarea>
   </div>
   <div class="section-label">Preferred Delivery Window</div>
   <div class="section-hint">please select only one - all delivery windows in local time</div>
@@ -950,6 +975,7 @@ app.post("/submit", async ({ body, request, set }) => {
   const zip = sanitizeString(data.zip);
   const windowVal = sanitizeString(data.window);
   const marketing_optin = data.marketing_optin === "1" ? 1 : 0;
+  const delivery_instructions = sanitizeString(data.delivery_instructions);
 
   // Validation
   const required = { first_name, last_name, email, address1, region, zip };
@@ -983,7 +1009,7 @@ app.post("/submit", async ({ body, request, set }) => {
   // Insert
   let result;
   try {
-    result = insert.run(first_name, last_name, email, null, address1, address2, null, region, zip, null, null, windowVal, marketing_optin, ip);
+    result = insert.run(first_name, last_name, email, null, address1, address2, null, region, zip, null, null, windowVal, delivery_instructions, marketing_optin, ip);
   } catch (e: any) {
     error("DB insert failed", { error: e.message, ip });
     sendAlert("Evergreen: DB insert error", e.message, true);
@@ -1005,7 +1031,7 @@ app.post("/submit", async ({ body, request, set }) => {
   // Notify via email
   if (SUBMISSION_EMAIL_ON) {
     await notifySubmission({
-      first_name, last_name, email, phone: sanitizeString(data.phone || ""), address1, city: sanitizeString(data.city || ""), region, zip, country: sanitizeString(data.country || ""), address2, notes: windowVal ? `Window: ${windowVal}` : "", marketing_optin: marketing_optin === 1, ip, id,
+      first_name, last_name, email, phone: sanitizeString(data.phone || ""), address1, city: sanitizeString(data.city || ""), region, zip, country: sanitizeString(data.country || ""), address2, notes: windowVal ? `Window: ${windowVal}` : "", delivery_instructions, marketing_optin: marketing_optin === 1, ip, id,
     });
   }
 
@@ -1051,7 +1077,16 @@ app.get("/admin", ({ headers, set }) => {
     const name = escapeHtml(String(r.first_name || "")) + " " + escapeHtml(String(r.last_name || ""));
     const addr = escapeHtml(String(r.address1 || "") + (r.address2 ? ", " + String(r.address2) : ""));
     const st = (r.status || "pending").toLowerCase();
-    tableRows += `<tr data-id="${r.id}" data-status="${st}" data-notes="${escapeHtml(String(r.notes || ""))}">
+    const dinst = String(r.delivery_instructions || "");
+    const dinstShort = dinst.length > 40 ? dinst.substring(0, 40) + "…" : dinst;
+    // Build a single lowercase haystack for fast client-side search
+    const searchHaystack = [
+      r.id, r.first_name, r.last_name, r.email, r.phone,
+      r.address1, r.address2, r.city, r.region, r.zip, r.country,
+      r.window, r.delivery_instructions, r.status, r.notes,
+      r.marketing_optin ? "yes" : "no",
+    ].map(v => String(v || "").toLowerCase()).join(" ");
+    tableRows += `<tr data-id="${r.id}" data-status="${st}" data-notes="${escapeHtml(String(r.notes || ""))}" data-dinst="${escapeHtml(dinst)}" data-search="${escapeHtml(searchHaystack)}">
       <td><input type="checkbox" class="row-check" value="${r.id}"></td>
       <td>${r.id}</td>
       <td class="td-name">${name}</td>
@@ -1063,6 +1098,7 @@ app.get("/admin", ({ headers, set }) => {
       <td class="td-zip">${escapeHtml(String(r.zip || ""))}</td>
       <td class="td-country">${escapeHtml(String(r.country || ""))}</td>
       <td class="td-window">${escapeHtml(String(r.window || ""))}</td>
+      <td class="td-dinst" title="${escapeHtml(dinst)}">${escapeHtml(dinstShort) || '<span style="color:#ccc">—</span>'}</td>
       <td>${statusBadge(r.status)}</td>
       <td class="td-optin">${r.marketing_optin ? "Yes" : "No"}</td>
       <td>${formatDate(r.submitted_at)}</td>
@@ -1163,7 +1199,7 @@ tr.editing td{background:#fff9c4;}
     <button class="btn btn-delete" onclick="bulkDelete()">Delete Selected</button>
   </div>
   <div class="toolbar-right">
-    <a class="btn" href="/export">Download CSV</a>
+    <a class="btn" id="csv-link" href="/export" onclick="return updateCsvLink(event)">Download CSV</a>
     <a class="btn btn-outline" href="/">View Form</a>
   </div>
 </div>
@@ -1180,15 +1216,19 @@ tr.editing td{background:#fff9c4;}
   <button class="filter-btn" onclick="filterWindow('Tue 4-6', event)">Tue 4-6</button>
   <button class="filter-btn" onclick="filterWindow('Thu 9-11', event)">Thu 9-11</button>
   <button class="filter-btn" onclick="filterWindow('Thu 4-6', event)">Thu 4-6</button>
+  <span style="margin:0 8px;color:#ddd">|</span>
+  <input id="search-input" type="search" placeholder="Search (name, email, address, delivery instructions…)" style="padding:6px 12px;border:1.5px solid #e0e0e0;border-radius:999px;font-family:inherit;font-size:12px;font-weight:600;color:var(--text);min-width:280px;outline:none;transition:border-color .15s;" oninput="applySearch()" onkeydown="if(event.key==='Escape'){this.value='';applySearch();}">
+  <button class="filter-btn" id="search-clear" onclick="clearSearch()" style="display:none">×</button>
+  <span id="search-count" style="margin-left:8px;font-size:12px;color:#888;font-weight:600"></span>
 </div>
 <div class="table-wrap">
   <table>
     <thead><tr>
       <th style="width:30px"><input type="checkbox" id="check-all" onclick="toggleAll()"></th>
       <th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Address</th><th>City</th>
-      <th>Region</th><th>Zip</th><th>Country</th><th>Window</th><th>Status</th><th>Opt-in</th><th>Date</th><th>Actions</th>
+      <th>Region</th><th>Zip</th><th>Country</th><th>Window</th><th>Delivery Inst.</th><th>Status</th><th>Opt-in</th><th>Date</th><th>Actions</th>
     </tr></thead>
-    <tbody>${rows.length===0?'<tr><td colspan="15" class="empty">No submissions yet.</td></tr>':tableRows}</tbody>
+    <tbody>${rows.length===0?`<tr><td colspan="16" class="empty">No submissions yet.</td></tr>`:tableRows}</tbody>
   </table>
 </div>
 <div class="modal" id="edit-modal"><div class="modal-box">
@@ -1204,6 +1244,8 @@ tr.editing td{background:#fff9c4;}
   <label>Zip</label><input id="edit-zip">
   <label>Country</label><input id="edit-country">
   <label>Window</label><input id="edit-window">
+  <label>Delivery Instructions</label>
+  <textarea id="edit-dinst" style="width:100%;padding:10px 14px;border:2px solid var(--coral);border-radius:12px;font-family:inherit;font-size:14px;outline:none;resize:vertical;min-height:60px" placeholder="Gate code, leave at door, etc."></textarea>
   <label>Marketing Opt-in</label><input id="edit-optin" placeholder="yes or no">
   <label>Status</label>
   <select id="edit-status" style="width:100%;padding:10px 14px;border:2px solid var(--coral);border-radius:12px;font-family:inherit;font-size:14px;outline:none">
@@ -1260,24 +1302,101 @@ async function bulkStatus(){
 }
 function filterStatus(s, evt){
   document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('filter-active'));
-  if(s==='all'){
-    evt.target.classList.add('filter-active');
-    document.querySelectorAll('tr[data-id]').forEach(r=>r.classList.remove('hidden-row'));
-  }else{
-    document.querySelectorAll('.filter-btn').forEach(b=>{if(b.textContent.toLowerCase()===s)b.classList.add('filter-active')});
-    document.querySelectorAll('tr[data-id]').forEach(r=>{
-      if(r.dataset.status===s)r.classList.remove('hidden-row');
-      else r.classList.add('hidden-row');
-    });
-  }
+  if(evt?.target) evt.target.classList.add('filter-active');
+  activeStatus = s;
+  applySearch();
 }
 function filterWindow(w, evt){
   document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('filter-active'));
   evt.target.classList.add('filter-active');
+  activeWindow = w;
+  applySearch();
+}
+let activeStatus = 'all';
+let activeWindow = '';
+function applySearch(){
+  const q=($('search-input')?.value || '').trim().toLowerCase();
+  const clr=$('search-clear'); if(clr) clr.style.display = q ? 'inline-block' : 'none';
+  // Multi-term AND search: split on whitespace, every term must match somewhere
+  const terms = q ? q.split(/\s+/).filter(Boolean) : [];
+  const winLabel = activeWindow; // e.g. "Tue 9-11"
+  let visible = 0, total = 0;
   document.querySelectorAll('tr[data-id]').forEach(r=>{
-    const td=r.querySelector('.td-window');
-    if(td&&td.textContent.includes(w))r.classList.remove('hidden-row');
-    else r.classList.add('hidden-row');
+    total++;
+    const hay = r.dataset.search || '';
+    const status = r.dataset.status || '';
+    const winCell = r.querySelector('.td-window')?.textContent || '';
+    const matchesText = terms.every(t => hay.includes(t));
+    const matchesStatus = activeStatus === 'all' || status === activeStatus;
+    const matchesWindow = !activeWindow || winCell.includes(winLabel);
+    if (matchesText && matchesStatus && matchesWindow) {
+      r.classList.remove('hidden-row');
+      visible++;
+    } else {
+      r.classList.add('hidden-row');
+    }
+  });
+  const cnt=$('search-count');
+  if(cnt){
+    if(q) cnt.textContent = visible + ' of ' + total;
+    else cnt.textContent = '';
+  }
+  // Persist + update CSV link + highlight
+  try { localStorage.setItem('evergreen-search-q', $('search-input')?.value || ''); } catch(e){}
+  const link = $('csv-link'); if(link){ link.href = q ? '/export?q=' + encodeURIComponent($('search-input').value) : '/export'; }
+  highlightMatches();
+}
+function clearSearch(){
+  $('search-input').value = '';
+  localStorage.removeItem('evergreen-search-q');
+  applySearch();
+}
+function loadSearchFromStorage(){
+  try {
+    const saved = localStorage.getItem('evergreen-search-q') || '';
+    if(saved){ $('search-input').value = saved; }
+  } catch(e) { /* localStorage unavailable */ }
+}
+function updateCsvLink(e){
+  // Append ?q=... so the server filters and names the file accordingly
+  const q = ($('search-input')?.value || '').trim();
+  const link = $('csv-link');
+  link.href = q ? '/export?q=' + encodeURIComponent(q) : '/export';
+  return true; // allow default click
+}
+function highlightMatches(){
+  const q = ($('search-input')?.value || '').trim();
+  // Remove existing highlights first
+  document.querySelectorAll('mark.evergreen-hl').forEach(m => {
+    const parent = m.parentNode;
+    while (m.firstChild) parent.insertBefore(m.firstChild, m);
+    parent.removeChild(m);
+    parent.normalize();
+  });
+  if(!q) return;
+  const terms = q.split(/\s+/).filter(Boolean).map(t => t.replace(/[.*+?^$()|[\]\\]/g, '\\$&'));
+  if(!terms.length) return;
+  const re = new RegExp('(' + terms.join('|') + ')', 'gi');
+  // Only highlight text-bearing td cells (skip id, checkbox, status, date, actions)
+  const cells = document.querySelectorAll('tr[data-id]:not(.hidden-row) td');
+  cells.forEach(td => {
+    if(td.querySelector('input,button,select')) return;
+    // Skip cells that have child structure (status badge span)
+    if(td.children.length > 0 && !/^td-(name|email|phone|addr|city|region|zip|country|window|optin|dinst)$/.test(td.className) && td.children.length > 0 && td.firstElementChild?.tagName === 'SPAN') return;
+    const walker = document.createTreeWalker(td, NodeFilter.SHOW_TEXT, null);
+    const targets = [];
+    let node;
+    while((node = walker.nextNode())){
+      if(node.nodeValue && node.nodeValue.trim()) targets.push(node);
+    }
+    targets.forEach(textNode => {
+      const html = textNode.nodeValue.replace(re, '<mark class="evergreen-hl" style="background:#fff3a0;color:inherit;padding:0 2px;border-radius:3px;">$1</mark>');
+      if(html !== textNode.nodeValue){
+        const span = document.createElement('span');
+        span.innerHTML = html;
+        textNode.parentNode.replaceChild(span, textNode);
+      }
+    });
   });
 }
 function editRow(id){
@@ -1293,6 +1412,7 @@ function editRow(id){
   $('edit-zip').value=tr.querySelector('.td-zip').textContent;
   $('edit-country').value=tr.querySelector('.td-country').textContent;
   $('edit-window').value=tr.querySelector('.td-window').textContent;
+  $('edit-dinst').value=tr.dataset.dinst||'';
   $('edit-optin').value=tr.querySelector('.td-optin').textContent;
   const st=tr.dataset.status||'pending';
   $('edit-status').value=st;
@@ -1313,6 +1433,7 @@ async function saveEdit(){
     zip:$('edit-zip').value,
     country:$('edit-country').value,
     window:$('edit-window').value,
+    delivery_instructions:$('edit-dinst').value,
     marketing_optin:$('edit-optin').value.toLowerCase()==='yes'?1:0,
   };
   const r=await fetch('/admin/edit/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>null);
@@ -1327,6 +1448,9 @@ async function saveEdit(){
   await fetch('/admin/notes/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({notes:newNotes})});
   location.reload();
 }
+// Init: restore search from localStorage, apply filter + highlight
+loadSearchFromStorage();
+applySearch();
 </script>
 </body></html>`;
 });
@@ -1380,6 +1504,7 @@ app.put("/admin/edit/:id", async ({ headers, params, body, set }) => {
     sanitizeString(b.zip),
     sanitizeString(b.country),
     sanitizeString(b.window),
+    sanitizeString(b.delivery_instructions),
     b.marketing_optin ? 1 : 0,
     id
   );
@@ -1476,21 +1601,42 @@ app.put("/admin/notes/:id", async ({ headers, params, body, set }) => {
 });
 
 // -- CSV export (Klaviyo format) --
-app.get("/export", ({ headers, set }) => {
+app.get("/export", ({ headers, request, set }) => {
   setSecurityHeaders(set.headers as Record<string, string>);
   if (!checkBasicAuth(headers as Record<string, string | undefined>)) {
     set.status = 401;
     set.headers["WWW-Authenticate"] = 'Basic realm="Evergreen Admin"';
     return "Unauthorized";
   }
-  const rows = (listAll.all() as any[]) || [];
-  let csv = "Email,$first_name,$last_name,$phone_number,$address1,$address2,$city,$region,$zip,$country,Status,Notes,Marketing_Opt_In,Submitted_At\n";
+  const url = new URL(request.url);
+  const q = (url.searchParams.get("q") || "").trim();
+  const terms = q ? q.toLowerCase().split(/\s+/).filter(Boolean) : [];
+  const allRows = (listAll.all() as any[]) || [];
+  const rows = terms.length === 0
+    ? allRows
+    : allRows.filter((r: any) => {
+        const hay = [
+          r.id, r.first_name, r.last_name, r.email, r.phone,
+          r.address1, r.address2, r.city, r.region, r.zip, r.country,
+          r.window, r.delivery_instructions, r.status, r.notes,
+          r.marketing_optin ? "yes" : "no",
+        ].map(v => String(v ?? "").toLowerCase()).join(" ");
+        return terms.every((t: string) => hay.includes(t));
+      });
+  let csv = "Email,$first_name,$last_name,$phone_number,$address1,$address2,$city,$region,$zip,$country,Status,Notes,Delivery_Instructions,Marketing_Opt_In,Submitted_At\n";
   for (const r of rows) {
-    const esc = (v: string) => `"${(v || "").replace(/"/g, '""')}"`;
-    csv += `${esc(r.email)},${esc(r.first_name)},${esc(r.last_name)},${esc(r.phone)},${esc(r.address1)},${esc(r.address2)},${esc(r.city)},${esc(r.region)},${esc(r.zip)},${esc(r.country)},${esc(r.status||'pending')},${esc(r.notes)},${r.marketing_optin ? "Yes" : "No"},${esc(r.submitted_at)}\n`;
+    const esc = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    csv += `${esc(r.email)},${esc(r.first_name)},${esc(r.last_name)},${esc(r.phone)},${esc(r.address1)},${esc(r.address2)},${esc(r.city)},${esc(r.region)},${esc(r.zip)},${esc(r.country)},${esc(r.status||'pending')},${esc(r.notes)},${esc(r.delivery_instructions)},${r.marketing_optin ? "Yes" : "No"},${esc(r.submitted_at)}\n`;
   }
   set.headers["Content-Type"] = "text/csv";
-  set.headers["Content-Disposition"] = `attachment; filename="evergreen-klaviyo-${new Date().toISOString().slice(0, 10)}.csv"`;
+  // Sanitize search term for filename: keep alnum + dash, cap at 40 chars
+  const slug = q
+    ? q.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "search"
+    : "";
+  const fname = slug
+    ? `evergreen-klaviyo-${slug}-${new Date().toISOString().slice(0, 10)}.csv`
+    : `evergreen-klaviyo-${new Date().toISOString().slice(0, 10)}.csv`;
+  set.headers["Content-Disposition"] = `attachment; filename="${fname}"`;
   return csv;
 });
 
