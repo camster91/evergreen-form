@@ -725,7 +725,7 @@ body {
       <input type="text" name="city" placeholder="city" required maxlength="80">
       <input type="text" name="region" placeholder="state" required maxlength="64">
       <input type="text" name="zip" placeholder="zip code" required maxlength="20">
-      <input type="text" name="instagram_handle" placeholder="Instagram (optional)" maxlength="80" autocomplete="off" pattern="^@?[A-Za-z0-9._\-]{1,80}$">
+      <input type="text" name="instagram_handle" placeholder="Instagram" maxlength="80" autocomplete="off" pattern="^@?[A-Za-z0-9._\-]{1,80}$">
     </div>
     <div class="full">
       <textarea name="delivery_instructions" placeholder="Additional delivery instructions; Example - gate code" rows="2" maxlength="500"></textarea>
