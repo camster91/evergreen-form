@@ -718,20 +718,18 @@ body {
 </div>
 <form id="fsf-form" method="post" action="/submit">
   <div class="input-grid">
-    <input type="text" name="first_name" placeholder="first name" required maxlength="80">
-    <input type="text" name="last_name" placeholder="last name" required maxlength="80">
-    <input type="text" name="address1" placeholder="street" required maxlength="256">
-    <input type="text" name="address2" placeholder="apartment / unit #" maxlength="128">
-    <input type="text" name="city" placeholder="city" required maxlength="80">
-    <input type="text" name="region" placeholder="state" required maxlength="64">
-    <input type="text" name="zip" placeholder="zip code" required maxlength="20">
-  </div>
-  <div class="full">
-    <input type="text" name="instagram_handle" placeholder="Instagram handle (optional)" maxlength="80" autocomplete="off" pattern="^@?[A-Za-z0-9._\\-]{1,80}$">
-  </div>
-  <div class="full">
-    <textarea name="delivery_instructions" placeholder="Additional delivery instructions; Example - gate code" rows="2" maxlength="500"></textarea>
-  </div>
+      <input type="text" name="first_name" placeholder="first name" required maxlength="80">
+      <input type="text" name="last_name" placeholder="last name" required maxlength="80">
+      <input type="text" name="address1" placeholder="street" required maxlength="256">
+      <input type="text" name="address2" placeholder="apartment / unit #" maxlength="128">
+      <input type="text" name="city" placeholder="city" required maxlength="80">
+      <input type="text" name="region" placeholder="state" required maxlength="64">
+      <input type="text" name="zip" placeholder="zip code" required maxlength="20">
+      <input type="text" name="instagram_handle" placeholder="Instagram (optional)" maxlength="80" autocomplete="off" pattern="^@?[A-Za-z0-9._\-]{1,80}$">
+    </div>
+    <div class="full">
+      <textarea name="delivery_instructions" placeholder="Additional delivery instructions; Example - gate code" rows="2" maxlength="500"></textarea>
+    </div>
   <div class="section-label">Preferred Delivery Window</div>
   <div class="section-hint">please select only one - all delivery windows in local time</div>
   <div class="delivery-row">
