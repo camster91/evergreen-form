@@ -244,6 +244,7 @@ function initDatabase() {
       marketing_optin INTEGER DEFAULT 0,
       window TEXT,
       delivery_instructions TEXT,
+      instagram_handle TEXT,
       ip TEXT,
       submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -270,6 +271,13 @@ function initDatabase() {
     // already exists — safe to ignore
   }
 
+  // Migrate: add instagram_handle column if missing
+  try {
+    db.exec(`ALTER TABLE submissions ADD COLUMN instagram_handle TEXT`);
+  } catch {
+    // already exists — safe to ignore
+  }
+
   // Indexes for common queries
   db.exec("CREATE INDEX IF NOT EXISTS idx_submissions_email ON submissions(email)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_submissions_submitted_at ON submissions(submitted_at DESC)");
@@ -277,13 +285,13 @@ function initDatabase() {
   return {
     db,
     insert: db.prepare(`
-      INSERT INTO submissions (first_name, last_name, email, phone, address1, address2, city, region, zip, country, notes, window, delivery_instructions, marketing_optin, ip)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO submissions (first_name, last_name, email, phone, address1, address2, city, region, zip, country, notes, window, delivery_instructions, instagram_handle, marketing_optin, ip)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
     listAll: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC`),
     listRecent: db.prepare(`SELECT * FROM submissions ORDER BY submitted_at DESC LIMIT 500`),
     deleteById: db.prepare(`DELETE FROM submissions WHERE id = ?`),
-    updateById: db.prepare(`UPDATE submissions SET first_name = ?, last_name = ?, email = ?, phone = ?, address1 = ?, address2 = ?, city = ?, region = ?, zip = ?, country = ?, window = ?, delivery_instructions = ?, marketing_optin = ? WHERE id = ?`),
+    updateById: db.prepare(`UPDATE submissions SET first_name = ?, last_name = ?, email = ?, phone = ?, address1 = ?, address2 = ?, city = ?, region = ?, zip = ?, country = ?, window = ?, delivery_instructions = ?, instagram_handle = ?, marketing_optin = ? WHERE id = ?`),
     countAll: db.prepare(`SELECT COUNT(*) as count FROM submissions`),
     countToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE DATE(submitted_at) = DATE('now')`),
     countByIPToday: db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE ip = ? AND DATE(submitted_at) = DATE('now')`),
@@ -405,6 +413,7 @@ async function notifySubmission(data: {
   address2?: string;
   notes?: string;
   delivery_instructions?: string;
+  instagram_handle?: string;
   marketing_optin: boolean;
   ip: string;
   id: number;
@@ -423,6 +432,7 @@ ZIP: ${data.zip}
 Country: ${data.country}
 Notes: ${data.notes || "(none)"}
 Delivery Instructions: ${data.delivery_instructions || "(none)"}
+Instagram: ${data.instagram_handle || "(none)"}
 Marketing Opt-in: ${data.marketing_optin ? "Yes" : "No"}
 IP: ${data.ip}
 ID: ${data.id}
@@ -712,8 +722,12 @@ body {
     <input type="text" name="last_name" placeholder="last name" required maxlength="80">
     <input type="text" name="address1" placeholder="street" required maxlength="256">
     <input type="text" name="address2" placeholder="apartment / unit #" maxlength="128">
+    <input type="text" name="city" placeholder="city" required maxlength="80">
     <input type="text" name="region" placeholder="state" required maxlength="64">
     <input type="text" name="zip" placeholder="zip code" required maxlength="20">
+  </div>
+  <div class="full">
+    <input type="text" name="instagram_handle" placeholder="Instagram handle (optional)" maxlength="80" autocomplete="off" pattern="^@?[A-Za-z0-9._\\-]{1,80}$">
   </div>
   <div class="full">
     <textarea name="delivery_instructions" placeholder="Additional delivery instructions; Example - gate code" rows="2" maxlength="500"></textarea>
@@ -899,7 +913,7 @@ app.get("/health", () => {
       errorCount,
       totalSubmissions: total,
       todaySubmissions: today,
-      version: "1.1.1",
+      version: "1.2.0",
     };
   } catch (e: any) {
     error("Health check failed", { error: e.message });
@@ -920,7 +934,7 @@ app.get("/api/health", () => {
       errorCount,
       totalSubmissions: total,
       todaySubmissions: today,
-      version: "1.1.1",
+      version: "1.2.0",
     };
   } catch (e: any) {
     return { status: "degraded", reason: e.message };
@@ -971,14 +985,16 @@ app.post("/submit", async ({ body, request, set }) => {
   const email = sanitizeString(data.email)?.toLowerCase();
   const address1 = sanitizeString(data.address1);
   const address2 = sanitizeString(data.address2);
+  const city = sanitizeString(data.city);
   const region = sanitizeString(data.region);
   const zip = sanitizeString(data.zip);
   const windowVal = sanitizeString(data.window);
   const marketing_optin = data.marketing_optin === "1" ? 1 : 0;
   const delivery_instructions = sanitizeString(data.delivery_instructions);
+  const instagram_handle = sanitizeString(data.instagram_handle);
 
   // Validation
-  const required = { first_name, last_name, email, address1, region, zip };
+  const required = { first_name, last_name, email, address1, city, region, zip };
   const missing: string[] = Object.entries(required)
     .filter(([, v]) => !v)
     .map(([k]) => k);
@@ -1009,7 +1025,7 @@ app.post("/submit", async ({ body, request, set }) => {
   // Insert
   let result;
   try {
-    result = insert.run(first_name, last_name, email, null, address1, address2, null, region, zip, null, null, windowVal, delivery_instructions, marketing_optin, ip);
+    result = insert.run(first_name, last_name, email, null, address1, address2, city, region, zip, null, null, windowVal, delivery_instructions, instagram_handle, marketing_optin, ip);
   } catch (e: any) {
     error("DB insert failed", { error: e.message, ip });
     sendAlert("Evergreen: DB insert error", e.message, true);
@@ -1031,7 +1047,7 @@ app.post("/submit", async ({ body, request, set }) => {
   // Notify via email
   if (SUBMISSION_EMAIL_ON) {
     await notifySubmission({
-      first_name, last_name, email, phone: sanitizeString(data.phone || ""), address1, city: sanitizeString(data.city || ""), region, zip, country: sanitizeString(data.country || ""), address2, notes: windowVal ? `Window: ${windowVal}` : "", delivery_instructions, marketing_optin: marketing_optin === 1, ip, id,
+      first_name, last_name, email, phone: sanitizeString(data.phone || ""), address1, city, region, zip, country: sanitizeString(data.country || ""), address2, notes: windowVal ? `Window: ${windowVal}` : "", delivery_instructions, instagram_handle, marketing_optin: marketing_optin === 1, ip, id,
     });
   }
 
@@ -1083,10 +1099,10 @@ app.get("/admin", ({ headers, set }) => {
     const searchHaystack = [
       r.id, r.first_name, r.last_name, r.email, r.phone,
       r.address1, r.address2, r.city, r.region, r.zip, r.country,
-      r.window, r.delivery_instructions, r.status, r.notes,
+      r.window, r.delivery_instructions, r.instagram_handle, r.status, r.notes,
       r.marketing_optin ? "yes" : "no",
     ].map(v => String(v || "").toLowerCase()).join(" ");
-    tableRows += `<tr data-id="${r.id}" data-status="${st}" data-notes="${escapeHtml(String(r.notes || ""))}" data-dinst="${escapeHtml(dinst)}" data-search="${escapeHtml(searchHaystack)}">
+    tableRows += `<tr data-id="${r.id}" data-status="${st}" data-notes="${escapeHtml(String(r.notes || ""))}" data-dinst="${escapeHtml(dinst)}" data-instagram="${escapeHtml(String(r.instagram_handle || ""))}" data-search="${escapeHtml(searchHaystack)}">
       <td><input type="checkbox" class="row-check" value="${r.id}"></td>
       <td>${r.id}</td>
       <td class="td-name">${name}</td>
@@ -1099,6 +1115,7 @@ app.get("/admin", ({ headers, set }) => {
       <td class="td-country">${escapeHtml(String(r.country || ""))}</td>
       <td class="td-window">${escapeHtml(String(r.window || ""))}</td>
       <td class="td-dinst" title="${escapeHtml(dinst)}">${escapeHtml(dinstShort) || '<span style="color:#ccc">—</span>'}</td>
+      <td class="td-instagram">${escapeHtml(String(r.instagram_handle || ""))}</td>
       <td>${statusBadge(r.status)}</td>
       <td class="td-optin">${r.marketing_optin ? "Yes" : "No"}</td>
       <td>${formatDate(r.submitted_at)}</td>
@@ -1226,9 +1243,9 @@ tr.editing td{background:#fff9c4;}
     <thead><tr>
       <th style="width:30px"><input type="checkbox" id="check-all" onclick="toggleAll()"></th>
       <th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Address</th><th>City</th>
-      <th>Region</th><th>Zip</th><th>Country</th><th>Window</th><th>Delivery Inst.</th><th>Status</th><th>Opt-in</th><th>Date</th><th>Actions</th>
+      <th>Region</th><th>Zip</th><th>Country</th><th>Window</th><th>Delivery Inst.</th><th>Instagram</th><th>Status</th><th>Opt-in</th><th>Date</th><th>Actions</th>
     </tr></thead>
-    <tbody>${rows.length===0?`<tr><td colspan="16" class="empty">No submissions yet.</td></tr>`:tableRows}</tbody>
+    <tbody>${rows.length===0?`<tr><td colspan="17" class="empty">No submissions yet.</td></tr>`:tableRows}</tbody>
   </table>
 </div>
 <div class="modal" id="edit-modal"><div class="modal-box">
@@ -1246,6 +1263,7 @@ tr.editing td{background:#fff9c4;}
   <label>Window</label><input id="edit-window">
   <label>Delivery Instructions</label>
   <textarea id="edit-dinst" style="width:100%;padding:10px 14px;border:2px solid var(--coral);border-radius:12px;font-family:inherit;font-size:14px;outline:none;resize:vertical;min-height:60px" placeholder="Gate code, leave at door, etc."></textarea>
+  <label>Instagram Handle</label><input id="edit-instagram" placeholder="@yourhandle">
   <label>Marketing Opt-in</label><input id="edit-optin" placeholder="yes or no">
   <label>Status</label>
   <select id="edit-status" style="width:100%;padding:10px 14px;border:2px solid var(--coral);border-radius:12px;font-family:inherit;font-size:14px;outline:none">
@@ -1413,6 +1431,7 @@ function editRow(id){
   $('edit-country').value=tr.querySelector('.td-country').textContent;
   $('edit-window').value=tr.querySelector('.td-window').textContent;
   $('edit-dinst').value=tr.dataset.dinst||'';
+  $('edit-instagram').value=tr.dataset.instagram||'';
   $('edit-optin').value=tr.querySelector('.td-optin').textContent;
   const st=tr.dataset.status||'pending';
   $('edit-status').value=st;
@@ -1434,6 +1453,7 @@ async function saveEdit(){
     country:$('edit-country').value,
     window:$('edit-window').value,
     delivery_instructions:$('edit-dinst').value,
+    instagram_handle:$('edit-instagram').value,
     marketing_optin:$('edit-optin').value.toLowerCase()==='yes'?1:0,
   };
   const r=await fetch('/admin/edit/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>null);
@@ -1505,6 +1525,7 @@ app.put("/admin/edit/:id", async ({ headers, params, body, set }) => {
     sanitizeString(b.country),
     sanitizeString(b.window),
     sanitizeString(b.delivery_instructions),
+    sanitizeString(b.instagram_handle),
     b.marketing_optin ? 1 : 0,
     id
   );
@@ -1618,15 +1639,15 @@ app.get("/export", ({ headers, request, set }) => {
         const hay = [
           r.id, r.first_name, r.last_name, r.email, r.phone,
           r.address1, r.address2, r.city, r.region, r.zip, r.country,
-          r.window, r.delivery_instructions, r.status, r.notes,
+          r.window, r.delivery_instructions, r.instagram_handle, r.status, r.notes,
           r.marketing_optin ? "yes" : "no",
         ].map(v => String(v ?? "").toLowerCase()).join(" ");
         return terms.every((t: string) => hay.includes(t));
       });
-  let csv = "Email,$first_name,$last_name,$phone_number,$address1,$address2,$city,$region,$zip,$country,Status,Notes,Delivery_Instructions,Marketing_Opt_In,Submitted_At\n";
+  let csv = "Email,$first_name,$last_name,$phone_number,$address1,$address2,$city,$region,$zip,$country,Status,Notes,Delivery_Instructions,Instagram_Handle,Marketing_Opt_In,Submitted_At\n";
   for (const r of rows) {
     const esc = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    csv += `${esc(r.email)},${esc(r.first_name)},${esc(r.last_name)},${esc(r.phone)},${esc(r.address1)},${esc(r.address2)},${esc(r.city)},${esc(r.region)},${esc(r.zip)},${esc(r.country)},${esc(r.status||'pending')},${esc(r.notes)},${esc(r.delivery_instructions)},${r.marketing_optin ? "Yes" : "No"},${esc(r.submitted_at)}\n`;
+    csv += `${esc(r.email)},${esc(r.first_name)},${esc(r.last_name)},${esc(r.phone)},${esc(r.address1)},${esc(r.address2)},${esc(r.city)},${esc(r.region)},${esc(r.zip)},${esc(r.country)},${esc(r.status||'pending')},${esc(r.notes)},${esc(r.delivery_instructions)},${esc(r.instagram_handle)},${r.marketing_optin ? "Yes" : "No"},${esc(r.submitted_at)}\n`;
   }
   set.headers["Content-Type"] = "text/csv";
   // Sanitize search term for filename: keep alnum + dash, cap at 40 chars
