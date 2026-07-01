@@ -65,6 +65,8 @@ jobs:
             TAG="${REF#refs/tags/}"
           elif [[ "$REF" == refs/heads/main || "$REF" == refs/heads/master ]]; then
             TAG="main"
+          elif [[ "$REF" == refs/pull/* ]]; then
+            TAG="pr-${{ github.event.pull_request.number }}"
           else
             TAG="${REF#refs/heads/}"
           fi
